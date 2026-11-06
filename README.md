@@ -26,6 +26,14 @@ one-bar hook, repeated over the next chord and answered, moving mostly by step w
 beats on the chord; the song goes intro (the hook, muffled) - the beat drops - the answer - a
 contrasting B section - the hook returns and resolves.
 
+Every seed is a different song, not just different notes: its own **groove** (boom-bap,
+half-time, 16th shuffle with ghost snares, a lazy Dilla-style pocket, bossa rim clicks and
+shaker, or a sparse kick-and-rim), swing amount and fills, all slightly humanised; its own
+**form** (16 or 20 bars, with the B section in different places, and a B that either dips into
+the filter or breaks the beat down); chord rhythm (held pads, stabs or half-bar hits), bass line
+(roots, syncopated or walking), melody density (sparse, flowing or busy 16ths) and progression
+(ten, including a dorian vamp).
+
 The structure is played by **switch blocks** on the melody track — levers the marble flips as
 it passes, each a hit of its own on the last beat of a phrase, so the change
 lands on the next downbeat: the intro is muffled behind a closed low-pass filter with vinyl
@@ -34,7 +42,8 @@ and reopens it as the hook returns, and the outro takes the beat out and muffles
 The picture goes soft and warm while the filter is closed. Pick the **Lofi bedroom** theme
 (dusky wallpaper, framed pictures, potted plants, twinkling fairy lights).
 
-**Endless lofi ∞** keeps going: while one song plays, the next is composed and planned in a
+**Endless lofi ∞** keeps going (set *Melody plays on* to **One per song** for a new lead
+instrument every song): while one song plays, the next is composed and planned in a
 background worker, and it takes over exactly at a loop seam (`src/timeline.js` keeps the
 songs on one clock). If the next one isn't ready in time, the current song simply loops again.
 

@@ -54,9 +54,16 @@ export function cameraPose(plan, tau, aspect, { zoom = 1 } = {}) {
   }
   const { first, last } = seamTimes(plan);
   const blend = (p, s, w) => ({ x: p.x + (s.x - p.x) * w, y: p.y + (s.y - p.y) * w, h: p.h + (s.h - p.h) * w });
-  const m = marbleAt(plan.lanes[0], tau);
+  // the first marble's position, smoothed (so its little settling hops as it lands on a rail don't
+  // shake the camera) - except right at the loop's ends, where it must be exact for the seam shot
+  const hw = 0.4 * Math.min(1, Math.max(0, Math.min(tau, plan.D - tau) / 0.6));
+  let mx = 0, my = 0;
+  for (let j = 0; j < 9; j++) {
+    const m = marbleAt(plan.lanes[0], Math.min(plan.D, Math.max(0, tau + (j / 8 - 0.5) * 2 * hw)));
+    mx += m.x / 9; my += m.y / 9;
+  }
   const seamH = seamPose(plan, 'top', aspect).h;
-  const track = { x: m.x, y: m.y, h: seamH };
+  const track = { x: mx, y: my, h: seamH };
   let pose = { x, y, h };
   pose = blend(pose, track, 1 - smooth(first - 0.9, first + 0.5, tau));
   pose = blend(pose, track, smooth(last - 0.2, last + 0.9, tau));

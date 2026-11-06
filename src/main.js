@@ -8,7 +8,7 @@ import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { planCourse, marbleAt, padShape, MARBLE_R, TUBE_R, WALL_MOUNTED, rehydratePlan } from './planner.js';
 import { cameraPose, cameraPlacement } from './camera.js';
 import { THEMES } from './themes.js';
-import { buildSong, generateSong, generateLofi, attachSwitches, groupNotes, splitParts, assignObjects } from './music.js';
+import { buildSong, generateSong, generateLofi, attachSwitches, groupNotes, splitParts, assignObjects, instrumentForSong } from './music.js';
 import { appendItem, itemAt, collect, settingsAt } from './timeline.js';
 import { parseMidi } from './midi.js';
 import { Synth } from './audio.js';
@@ -729,7 +729,9 @@ function prepareSong(key, seed) {
     return { ...p, groups: g.groups };
   });
   // what each marble hits: chosen per marble, or mixed by song section
-  assignObjects(parts, { melody: $('melodyObj').value, harmony: $('harmonyObj').value, drums: $('drumKit').value,
+  // ("one per song": the seed picks it, so in endless mode every new song has a new lead instrument)
+  const melody = $('melodyObj').value === 'song' ? instrumentForSong(seed, !!song.lofi) : $('melodyObj').value;
+  assignObjects(parts, { melody, harmony: $('harmonyObj').value, drums: $('drumKit').value,
     seed, bpm: song.bpm || 120, bar: song.bar || 4, lofi: !!song.lofi });
   if (song.fx) attachSwitches(parts, song.fx);
   return { song, parts, split, truncated, seed, key };

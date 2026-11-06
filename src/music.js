@@ -304,7 +304,7 @@ export function splitParts(notes, { second = 'auto' } = {}) {
 // boundaries, together in both marbles. The bass always stays on bars, drums stay drums.
 // Sets g.obj on each group; deterministic for a seed.
 /** Choices for the melody marble and for the second marble's harmony/bass ('mix' = by section). */
-export const MELODY_OBJECTS = ['mix', 'key', 'epiano', 'guitar', 'button', 'tube', 'bamboo', 'bottle', 'neon', 'bell'];
+export const MELODY_OBJECTS = ['mix', 'song', 'key', 'epiano', 'guitar', 'button', 'tube', 'bamboo', 'bottle', 'neon', 'bell'];
 export const HARMONY_OBJECTS = ['mix', 'bar', 'vinyl', 'guitar', 'epiano', 'button', 'tube', 'bamboo', 'bottle', 'neon', 'bell'];
 /** The drum marble: the standard kit, woodblocks & cowbells, or both by song section. */
 export const DRUM_KITS = ['kit', 'blocks', 'mix'];
@@ -381,83 +381,128 @@ export function assignObjects(parts, { melody = 'mix', harmony = 'mix', drums = 
 // bars, a swung boom-bap beat (a background track, not on a marble) and a structure of switch
 // blocks: a muffled intro with vinyl crackle, the beat and full sound dropping in, a filter dip,
 // and an outro. Deterministic per seed.
+const MAJOR = [0, 2, 4, 5, 7, 9, 11], NAT_MINOR = [0, 2, 3, 5, 7, 8, 10], DORIAN = [0, 2, 3, 5, 7, 9, 10];
 const LOFI_PROGRESSIONS = [
-  { name: 'ii-V-I-vi', minor: false, chords: [[2, 'm9'], [5, '9'], [1, 'maj9'], [6, 'm7']] },
-  { name: 'I-vi-ii-V', minor: false, chords: [[1, 'maj7'], [6, 'm9'], [2, 'm7'], [5, '7']] },
-  { name: 'IV-iii-ii-I', minor: false, chords: [[4, 'maj7'], [3, 'm7'], [2, 'm9'], [1, 'maj9']] },
-  { name: 'i-iv-VII-III', minor: true, chords: [[1, 'm9'], [4, 'm7'], [7, '9'], [3, 'maj7']] },
-  { name: 'i-VI-iv-v', minor: true, chords: [[1, 'm7'], [6, 'maj7'], [4, 'm9'], [5, 'm7']] },
+  { name: 'ii-V-I-vi', scale: MAJOR, chords: [[2, 'm9'], [5, '9'], [1, 'maj9'], [6, 'm7']] },
+  { name: 'I-vi-ii-V', scale: MAJOR, chords: [[1, 'maj7'], [6, 'm9'], [2, 'm7'], [5, '7']] },
+  { name: 'IV-iii-ii-I', scale: MAJOR, chords: [[4, 'maj7'], [3, 'm7'], [2, 'm9'], [1, 'maj9']] },
+  { name: 'vi-IV-I-V', scale: MAJOR, chords: [[6, 'm9'], [4, 'maj7'], [1, 'maj9'], [5, '9']] },
+  { name: 'I-iii-IV-iv', scale: MAJOR, chords: [[1, 'maj9'], [3, 'm7'], [4, 'maj7'], [4, 'm7']] },
+  { name: 'ii-V vamp', scale: MAJOR, chords: [[2, 'm9'], [5, '9'], [2, 'm9'], [5, '9']] },
+  { name: 'i-iv-VII-III', scale: NAT_MINOR, chords: [[1, 'm9'], [4, 'm7'], [7, '9'], [3, 'maj7']] },
+  { name: 'i-VI-iv-v', scale: NAT_MINOR, chords: [[1, 'm7'], [6, 'maj7'], [4, 'm9'], [5, 'm7']] },
+  { name: 'i-v-iv-VI', scale: NAT_MINOR, chords: [[1, 'm9'], [5, 'm7'], [4, 'm7'], [6, 'maj7']] },
+  { name: 'i-IV dorian', scale: DORIAN, chords: [[1, 'm9'], [4, '9'], [1, 'm9'], [4, '9']] },
 ];
 const CHORD_SHAPES = { maj7: [0, 4, 7, 11], maj9: [0, 4, 7, 11, 14], m7: [0, 3, 7, 10], m9: [0, 3, 7, 10, 14], 7: [0, 4, 7, 10], 9: [0, 4, 7, 10, 14] };
-const MAJOR = [0, 2, 4, 5, 7, 9, 11], NAT_MINOR = [0, 2, 3, 5, 7, 8, 10];
 const LOFI_TITLES = ['rainy window', 'late night study', 'coffee & clouds', 'sleepy tram', 'paper lanterns', 'city lights',
-  'quiet afternoon', 'warm tape', 'moonlit desk', 'slow sunday', 'snowfall', 'lost cassette', 'night bus', 'old polaroids'];
+  'quiet afternoon', 'warm tape', 'moonlit desk', 'slow sunday', 'snowfall', 'lost cassette', 'night bus', 'old polaroids',
+  'tea gone cold', 'window seat', 'last train home', 'sunset rooftop', 'fog lights', 'library hush', 'soft focus', 'neon drizzle'];
 
+// Song forms: 4-bar sections. I = the intro (the hook, muffled), A = the hook, A2 = the hook
+// answered (comes home), B = a contrasting idea, B2 = B answered.
+const LOFI_FORMS = [
+  ['I', 'A', 'A2', 'B', 'A2'],
+  ['I', 'A', 'B', 'A2'],
+  ['I', 'A', 'B', 'B2', 'A2'],
+  ['I', 'A2', 'B', 'A', 'A2'],
+];
+// Grooves: per-beat patterns (positions in beats within a bar) for the background beat.
+// k = kick, s = snare, r = rim click, h = closed hat, o = open hat, x = shaker; v = velocity.
+const LOFI_GROOVES = {
+  boombap: { feel: 8, k: [[0, 2.5], [0, 1.75, 2.5]], s: [1, 3], h: 'eighths' },
+  halftime: { feel: 8, k: [[0, 1.75], [0, 0.75, 1.75]], s: [2], h: 'eighths', ghost: [3.25] },
+  shuffle: { feel: 16, k: [[0, 0.75, 2.5], [0, 2.25, 2.5]], s: [1, 3], h: 'sixteenths', ghost: [1.75, 3.75] },
+  dilla: { feel: 8, k: [[0, 1.5, 2.75], [0, 0.75, 2.75]], s: [1, 3], h: 'eighths', late: 0.07 },
+  bossa: { feel: 8, k: [[0, 1.5, 2, 3.5]], r: [[0, 1.5, 3], [1, 2]], h: 'shaker' },
+  sparse: { feel: 8, k: [[0, 2.5], [0]], r: [[1, 3]], h: 'quarters' },
+};
+// Melody rhythm cells ([onset, length] in beats), by density
+const LOFI_CELLS = {
+  sparse: [[[0, 2], [2, 2]], [[0, 2], [2, 1], [3, 1]], [[0.5, 1.5], [2, 2]], [[0, 1.5], [1.5, 2.5]], [[0, 1], [1, 1], [2, 2]], [[0, 1], [1, 2], [3, 1]]],
+  flowing: [
+    [[0, 1], [1, 0.5], [1.5, 1.5], [3, 1]], [[0.5, 0.5], [1, 1], [2, 0.5], [2.5, 1.5]], [[0, 0.75], [0.75, 0.75], [1.5, 1], [2.5, 1.5]],
+    [[0, 1.5], [1.5, 0.5], [2, 2]], [[1, 0.5], [1.5, 0.5], [2, 1], [3, 1]], [[0, 0.5], [0.5, 0.5], [1, 2], [3, 0.5], [3.5, 0.5]],
+  ],
+  busy: [
+    [[0, 0.5], [0.5, 0.25], [0.75, 0.75], [1.5, 0.5], [2, 1], [3, 0.5], [3.5, 0.5]],
+    [[0, 0.25], [0.25, 0.25], [0.5, 1], [1.5, 0.5], [2, 0.5], [2.5, 1.5]],
+    [[0.5, 0.5], [1, 0.5], [1.5, 0.5], [2, 0.5], [2.5, 0.5], [3, 1]],
+    [[0, 0.75], [0.75, 0.25], [1, 0.5], [1.5, 1.5], [3, 0.25], [3.25, 0.75]],
+    [[0, 0.5], [0.5, 0.5], [1, 0.25], [1.25, 0.75], [2, 2]],
+  ],
+};
+const LOFI_SHAPES = [[1, 1, -2, 1], [-1, -1, 2, -1], [2, -1, -1, 1], [0, 1, -1, -2], [1, -2, 1, 1], [-2, 1, 1, -1], [1, 1, 1, -3], [-1, 2, -1, -1], [1, -1, 2, -1]];
+
+/**
+ * A procedural lofi song. Every seed draws its own groove (boom-bap, half-time, 16th shuffle,
+ * Dilla-style, bossa, sparse) with its own swing and fills, its own form, chord rhythm, bass line,
+ * melody density and progression - and writes the melody as a tune: a one-bar hook, sequenced
+ * over the next chord and answered, mostly stepwise with the strong beats on the chord. Switch
+ * blocks shape it: the beat drops in, the B section dips into the filter or breaks the beat
+ * down, and the end goes back to how it started (seamless loop). Deterministic per seed.
+ */
 export function generateLofi(seed) {
   const rng = mulberry32((seed >>> 0) ^ 0x10f1);
   const pick = (a) => a[Math.floor(rng() * a.length)];
-  const bpm = Math.round(70 + rng() * 18), beat = 60 / bpm, bar = 4, barLen = bar * beat;
-  const prog = pick(LOFI_PROGRESSIONS);
-  const scale = prog.minor ? NAT_MINOR : MAJOR;
+  const shuffle = (a) => { const b = [...a]; for (let i = b.length - 1; i > 0; i--) { const j = Math.floor(rng() * (i + 1)); [b[i], b[j]] = [b[j], b[i]]; } return b; };
+  const grooveName = pick(Object.keys(LOFI_GROOVES)), groove = LOFI_GROOVES[grooveName];
+  const bpm = Math.round(grooveName === 'halftime' ? 78 + rng() * 14 : 68 + rng() * 20);
+  const beat = 60 / bpm, bar = 4, barLen = bar * beat;
+  const prog = pick(LOFI_PROGRESSIONS), scale = prog.scale;
   const root = 48 + Math.floor(rng() * 7); // C3 .. F#3
   const degree = (d) => root + scale[(d - 1) % 7] + 12 * Math.floor((d - 1) / 7);
-  const BARS = 20, notes = [], beatTrack = [];
-  const swing = (b) => (Math.abs(b % 1 - 0.5) < 1e-6 ? b + 0.08 : b); // swung off-beat eighths
-  // Form (bars): 0-3 the hook, muffled | 4-11 the hook as the beat drops, then its answer |
-  // 12-15 B: a contrasting idea over the progression started from its third chord | 16-19 the
-  // hook returns and resolves. (The switch blocks below follow the same plan.)
-  const inB = (b) => b >= 12 && b < 16;
-  const chordOf = (b) => prog.chords[inB(b) ? (b - 12 + 2) % 4 : b % 4];
+  const form = pick(LOFI_FORMS), BARS = form.length * 4;
+  const sectionAt = (b) => form[Math.floor(b / 4) % form.length]; // (past the end: the loop starts again)
+  const bShift = pick([2, 1, 3]); // the B section's chords: the progression from another chord
+  const chordOf = (b) => prog.chords[(sectionAt(b)[0] === 'B' ? b + bShift : b) % 4];
+  const density = grooveName === 'shuffle' || grooveName === 'sparse' ? pick(['flowing', 'sparse']) : bpm <= 80 ? pick(['sparse', 'flowing', 'flowing', 'busy']) : pick(['sparse', 'flowing']);
+  const comp = pick(['pad', 'pad', 'stabs', 'halves']);
+  const bassStyle = comp === 'stabs' ? pick(['roots', 'walk']) : pick(['roots', 'sync', 'walk']);
+  const sw8 = 0.03 + rng() * 0.11, sw16 = 0.02 + rng() * 0.05; // swing (in beats) for off-8ths / off-16ths
+  const swing = (on) => { const f = ((on % 1) + 1) % 1; return on + (Math.abs(f - 0.5) < 1e-6 ? sw8 : Math.abs(f - 0.25) < 1e-6 || Math.abs(f - 0.75) < 1e-6 ? sw16 : 0); };
+  const notes = [], beatTrack = [];
 
-  // chords (voice-led) + bass on the second marble, channel 1
+  // ---- chords (voice-led) + bass, on the second marble (channel 1)
   let prev = null;
-  const voicings = [];
   for (let b = 0; b < BARS; b++) {
-    const [d, q] = chordOf(b);
+    const [d, q] = chordOf(b), [dn] = chordOf(b + 1);
     const r = degree(d), shape = CHORD_SHAPES[q];
-    // choose the inversion nearest the previous voicing, around middle C
-    let best = null;
+    let best = null; // the inversion nearest the previous voicing, around middle C
     for (let inv = 0; inv < shape.length; inv++) for (const oct of [0, 12, -12]) {
       const v = shape.map((iv, i) => r + iv + oct + (i < inv ? 12 : 0)).sort((x, y) => x - y);
       if (v[0] < 50 || v[v.length - 1] > 79) continue;
       const cost = prev ? v.reduce((a, m, i) => a + Math.abs(m - (prev[i] ?? prev[prev.length - 1])), 0) : Math.abs(v[0] - 57);
       if (!best || cost < best.cost) best = { v, cost };
     }
-    prev = (best || { v: shape.map((iv) => r + iv + 12) }).v;
-    voicings.push({ v: prev, bass: r - 12 });
+    const v = (prev = (best || { v: shape.map((iv) => r + iv + 12) }).v);
+    const t0 = b * barLen, bass = r - 12, fifth = bass + 7, third = bass + shape[1];
+    const chordAt = (on, len, vel = 0.45) => { for (const m of v) notes.push({ t: t0 + swing(on) * beat, dur: len * beat, midi: m, vel, ch: 1 }); };
+    if (comp === 'pad') chordAt(b > 0 && rng() < 0.3 ? -0.5 : 0, bar * 0.95);
+    else if (comp === 'stabs') { chordAt(0, 0.9); chordAt(1.5, 1.2, 0.4); }
+    else { chordAt(0, 1.8); chordAt(2, 1.8, 0.4); }
+    const bassAt = (on, len, midi, vel = 0.55) => notes.push({ t: t0 + swing(on) * beat, dur: len * beat, midi, vel, ch: 1 });
+    if (bassStyle === 'roots') { bassAt(0, 1.8, bass, 0.6); bassAt(2, 1.5, rng() < 0.3 ? fifth : bass); }
+    else if (bassStyle === 'sync') { bassAt(0, 1.5, bass, 0.6); bassAt(1.75, 1, bass); bassAt(3, 0.9, fifth, 0.5); }
+    else if (bassStyle === 'long') bassAt(0, 3.6, bass, 0.6);
+    else { // walking: root, third, fifth, then a step into the next chord's root
+      const next = degree(dn) - 12, approach = next + (next > fifth ? -1 : 1);
+      [bass, third, fifth, approach].forEach((m, i) => bassAt(i, 0.9, m, i ? 0.5 : 0.6));
+    }
   }
-  voicings.forEach(({ v, bass }, b) => {
-    const t0 = b * barLen;
-    const push = b > 0 && rng() < 0.3; // anticipate the chord on the "and" of 4
-    const tc = push ? t0 - 0.5 * beat : t0;
-    for (const m of v) notes.push({ t: tc, dur: barLen * 0.95, midi: m, vel: 0.45, ch: 1 });
-    notes.push({ t: t0, dur: beat * 1.8, midi: bass, vel: 0.6, ch: 1 });
-    notes.push({ t: t0 + 2 * beat, dur: beat * 1.5, midi: bass + (rng() < 0.3 ? 7 : 0), vel: 0.5, ch: 1 });
-  });
 
-  // melody: a hook, built like a tune rather than random notes. Pitches are scale steps (idx 0 =
-  // the key's root, an octave above the chords); it mostly moves by step, notes on beats 1 and 3
-  // land on the chord, and phrases are question (ends up in the air) + answer (comes home).
+  // ---- melody: a hook, built like a tune. Pitches are scale steps (idx 0 = the key's root, an
+  // octave above the chords); notes on beats 1 and 3 land on the chord; phrases are question (ends
+  // up in the air) and answer (comes home).
   const MEL0 = root + 12;
   const midiOf = (i) => MEL0 + scale[((i % 7) + 7) % 7] + 12 * Math.floor(i / 7);
   const isTone = (i, b) => [0, 2, 4].includes((((i - (chordOf(b)[0] - 1)) % 7) + 7) % 7);
-  // the nearest chord tone, looking first the way the tune is heading
   const toTone = (i, b, dir = 1) => { for (const d of [0, dir, -dir, 2 * dir, -2 * dir, 3]) if (isTone(i + d, b)) return i + d; return i; };
   const LO = -1, HI = 9; // the melody's range in scale steps (about a tenth)
   const fit = (i) => (i > HI ? i - 7 * Math.ceil((i - HI) / 7) : i < LO ? i + 7 * Math.ceil((LO - i) / 7) : i);
-  // one-bar rhythm cells ([onset, length] in beats; laid back, a little syncopated) and note shapes
-  const CELLS = [
-    [[0, 1], [1, 0.5], [1.5, 1.5], [3, 1]],
-    [[0.5, 0.5], [1, 1], [2, 0.5], [2.5, 1.5]],
-    [[0, 0.75], [0.75, 0.75], [1.5, 1], [2.5, 1.5]],
-    [[0, 1.5], [1.5, 0.5], [2, 2]],
-    [[1, 0.5], [1.5, 0.5], [2, 1], [3, 1]],
-    [[0, 0.5], [0.5, 0.5], [1, 2], [3, 0.5], [3.5, 0.5]],
-  ];
-  const SHAPES = [[1, 1, -2, 1], [-1, -1, 2, -1], [2, -1, -1, 1], [0, 1, -1, -2], [1, -2, 1, 1], [-2, 1, 1, -1], [1, 1, 1, -3]];
   const makeHook = () => {
-    const shape = pick(SHAPES), cells = [...CELLS].sort(() => rng() - 0.5);
-    return { a: cells[0], sa: shape, b: cells[1], sb: shape.map((x) => -x), c: cells[2], sc: pick(SHAPES) };
+    const shape = pick(LOFI_SHAPES), cells = shuffle(LOFI_CELLS[density]);
+    return { a: cells[0], sa: shape, b: cells[1], sb: shape.map((x) => -x), c: cells[2 % cells.length], sc: pick(LOFI_SHAPES) };
   };
   const melody = [];
   let last = 4;
@@ -498,12 +543,12 @@ export function generateLofi(seed) {
     else playCell(h.b, h.sb, toTone(last + 1, b0 + 2), b0 + 2);
     cadence(b0 + 3, home);
   };
-  const hook = makeHook(), hookB = makeHook();
-  phrase(hook, 0, false, 4); // intro: the hook, heard through the filter
-  phrase(hook, 4, false, 4); // the beat drops in: the hook again
-  phrase(hook, 8, true, 4); // ... and its answer
-  phrase(hookB, 12, false, 7); // B: higher, a new idea
-  phrase(hook, 16, true, 4); // the hook comes back and resolves
+  const hook = makeHook(), hookB = makeHook(), bCenter = pick([7, 6, 2]);
+  form.forEach((sec, k) => {
+    const b0 = k * 4;
+    if (sec === 'B' || sec === 'B2') phrase(hookB, b0, sec === 'B2', bCenter);
+    else phrase(hook, b0, sec === 'A2' || k === form.length - 1, 4);
+  });
   for (const m of melody) {
     const t = (m.b * bar + swing(m.on)) * beat;
     const dur = Math.min(m.len * beat * 0.92, BARS * barLen - t - 0.05);
@@ -511,34 +556,61 @@ export function generateLofi(seed) {
     notes.push({ t, dur, midi: midiOf(m.i), vel: (m.strong ? 0.68 : 0.56) + rng() * 0.08, ch: 0 });
   }
 
-  // the beat track (background): boom-bap with swung hats
+  // ---- the beat (a background track): the groove, varied a little by section, humanised
+  const hum = () => (rng() - 0.5) * 0.02; // up to +-10 ms
+  const hit = (b, on, midi, vel) => beatTrack.push({ t: Math.max(0, (b * bar + swing(on)) * beat + hum()), midi, vel: Math.min(1, vel * (0.9 + rng() * 0.2)), ch: 9, dur: 0.05 });
+  const kickBars = groove.k.map((k) => k); // two kick patterns, alternating for a 2-bar phrase
+  const fillStyle = pick(['snare', 'kick', 'none']);
   for (let b = 0; b < BARS; b++) {
-    const t0 = b * bar;
-    const kicks = [0, 2.5, ...(rng() < 0.5 ? [1.75] : [])];
-    for (const k of kicks) beatTrack.push({ t: (t0 + k) * beat, midi: 36, vel: 0.8, ch: 9, dur: 0.1 });
-    for (const sn of [1, 3]) beatTrack.push({ t: (t0 + sn) * beat, midi: 38, vel: 0.7, ch: 9, dur: 0.1 });
-    const fill = b === 11 || b === 15; // a snare fill into the B section, and back out of it
-    for (let e = 0; e < 8; e++) {
-      if (fill && e >= 6) continue;
-      beatTrack.push({ t: (t0 + swing(e / 2)) * beat, midi: e === 7 && rng() < 0.3 ? 46 : 42, vel: e % 2 ? 0.45 : 0.6, ch: 9, dur: 0.05 });
+    const sec = sectionAt(b), inB = sec[0] === 'B', lastOfSection = b % 4 === 3 && b < BARS - 1;
+    const fill = lastOfSection && fillStyle !== 'none' && rng() < 0.75;
+    for (const k of kickBars[b % kickBars.length]) if (!(fill && k >= 3)) hit(b, k, 36, 0.8);
+    for (const s of groove.s || []) if (!(fill && s >= 3)) hit(b, s + (groove.late || 0), inB && grooveName === 'boombap' ? 37 : 38, 0.7);
+    for (const g of groove.ghost || []) if (!fill) hit(b, g, 38, 0.18);
+    for (const r of groove.r ? groove.r[b % groove.r.length] : []) hit(b, r, 37, 0.6);
+    const hats = groove.h === 'sixteenths' ? 16 : groove.h === 'quarters' ? 4 : 8;
+    for (let e = 0; e < hats; e++) {
+      const on = (e * 4) / hats;
+      if (fill && on >= 3) continue;
+      if (groove.h === 'shaker') { hit(b, on, 70, e % 2 ? 0.5 : 0.8); if (e % 2) hit(b, on + 0.25, 70, 0.35); continue; }
+      const open = e === hats - 1 && b % 2 === 1 && rng() < 0.4;
+      const acc = groove.h === 'sixteenths' ? [0.65, 0.3, 0.45, 0.3][e % 4] : e % 2 ? 0.45 : 0.62;
+      hit(b, on, open ? 46 : 42, (inB && grooveName !== 'sparse' ? 0.8 : 1) * acc);
     }
-    if (fill) for (let k = 0; k < 4; k++) beatTrack.push({ t: (t0 + 3 + k * 0.25) * beat, midi: 38, vel: 0.35 + k * 0.12, ch: 9, dur: 0.05 });
+    if (fill) { // into the next section: a snare roll or a kick pickup
+      if (fillStyle === 'snare') for (let k = 0; k < 4; k++) hit(b, 3 + k * 0.25, 38, 0.3 + k * 0.13);
+      else { hit(b, 3, 38, 0.6); hit(b, 3.5, 36, 0.7); hit(b, 3.75, 36, 0.6); }
+    }
   }
 
-  // The switch blocks (song time; the state at t = 0 is the intro's: muffled, crackle, no beat).
-  // Each is thrown on the "and of 4" at the end of a phrase - where the melody is holding its
-  // last long note, so the marble has a moment of its own for the switch - and the change lands
-  // on the next downbeat: the beat drops in, the B section dips into the filter, the hook comes
-  // back open, and the last bar takes the beat out and muffles it again (seamless loop).
+  // ---- the switch blocks, each thrown on the "and of 4" at the end of a phrase (the melody holds
+  // its last note there, so the marble has a moment of its own) and landing on the next downbeat
+  const beatInIntro = rng() < 0.35; // some intros already have the beat, muffled
+  const initial = { beat: beatInIntro, filter: true, crackle: true };
+  const bMode = pick(['dip', 'breakdown']); // the B section: muffled, or the beat drops out
   const at = (b) => (b * bar - 0.5) * beat;
-  const fx = [
-    { t: at(4), set: { beat: true, filter: false } },
-    { t: at(12), set: { filter: true } },
-    { t: at(16), set: { filter: false } },
-    { t: at(20), set: { beat: false, filter: true } },
-  ];
+  const fx = [];
+  let inBNow = false;
+  form.forEach((sec, k) => {
+    if (k === 0) return;
+    const b0 = k * 4, isB = sec[0] === 'B';
+    if (k === 1) fx.push({ t: at(b0), set: isB ? { beat: bMode !== 'breakdown', filter: bMode !== 'dip' } : { beat: true, filter: false } });
+    else if (isB && !inBNow) fx.push({ t: at(b0), set: bMode === 'dip' ? { filter: true } : { beat: false } });
+    else if (!isB && inBNow) fx.push({ t: at(b0), set: bMode === 'dip' ? { filter: false } : { beat: true } });
+    inBNow = isB;
+  });
+  fx.push({ t: at(BARS), set: { beat: initial.beat, filter: true } }); // the end: back to the start
   const title = pick(LOFI_TITLES);
-  return { name: `lofi — ${title}`, notes, beat: beatTrack, fx, initial: { beat: false, filter: true, crackle: true }, bpm, bar, lofi: true, seed };
+  return { name: `lofi — ${title}`, notes, beat: beatTrack, fx, initial, bpm, bar, lofi: true, seed,
+    style: { groove: grooveName, form: form.join(' '), density, comp, bass: bassStyle, progression: prog.name } };
+}
+
+/** Melody instruments for "one per song": each song (seed) gets the next one, so it changes every song. */
+const SONG_INSTRUMENTS = ['key', 'guitar', 'bamboo', 'bell', 'bottle', 'tube', 'neon', 'button'];
+const LOFI_SONG_INSTRUMENTS = ['epiano', 'guitar', 'bamboo', 'bell', 'bottle', 'key'];
+export function instrumentForSong(seed, lofi = false) {
+  const list = lofi ? LOFI_SONG_INSTRUMENTS : SONG_INSTRUMENTS;
+  return list[((seed % list.length) + list.length) % list.length];
 }
 
 /**

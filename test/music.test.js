@@ -151,7 +151,7 @@ test('lofi: deterministic, slow, jazzy chords on the second marble, a beat track
   assert.notDeepEqual(a.notes, c.notes);
   for (const seed of [1, 2, 3, 4, 5, 9, 77]) {
     const s = generateLofi(seed);
-    assert.ok(s.lofi && s.bpm >= 70 && s.bpm <= 88, `bpm ${s.bpm}`);
+    assert.ok(s.lofi && s.bpm >= 68 && s.bpm <= 92, `bpm ${s.bpm}`);
     assert.ok(s.notes.every((n) => n.dur > 0 && n.midi > 20 && n.midi < 100 && n.ch !== 9), 'pitched only (the beat is separate)');
     const chords = groupNotes(s.notes.filter((n) => n.ch === 1)).groups.filter((g) => g.notes.length >= 4);
     assert.ok(chords.length >= 16, 'a 7th/9th chord every bar');
@@ -176,9 +176,34 @@ test('lofi: deterministic, slow, jazzy chords on the second marble, a beat track
     const leaps = mel.slice(1).filter((n, i) => Math.abs(n.midi - mel[i].midi) > 5).length;
     assert.ok(leaps / mel.length < 0.25, `mostly steps (${leaps} leaps of ${mel.length})`);
     const barLen = 4 * 60 / s.bpm, barNotes = (b) => mel.filter((n) => n.t >= b * barLen - 1e-6 && n.t < (b + 1) * barLen - 1e-6).map((n) => n.midi);
-    assert.deepEqual(barNotes(16), barNotes(4), 'the hook returns');
+    const lastSection = 4 * (s.style.form.split(' ').length - 1);
+    assert.deepEqual(barNotes(lastSection), barNotes(4), 'the hook returns');
     assert.ok(parts[0].groups.every((g, i, arr) => i === 0 || g.t >= arr[i - 1].t), 'still in time order');
     assert.ok(parts[0].groups.filter((g) => g.obj !== 'switch').some((g) => g.obj === 'epiano'), 'the lofi mix leads on e-piano');
     assert.ok(parts[1].groups.every((g) => g.obj === 'vinyl'), 'chords and bass on the records');
   }
 });
+
+test('lofi variety: songs differ in groove, form, chords and rhythm; the beat is humanised', async () => {
+  const { generateLofi } = await import('../src/music.js');
+  const songs = Array.from({ length: 30 }, (_, i) => generateLofi(i + 1));
+  const kinds = (k) => new Set(songs.map((s) => s.style[k]));
+  assert.ok(kinds('groove').size >= 5, `grooves: ${[...kinds('groove')]}`);
+  assert.ok(kinds('form').size >= 3, `forms: ${[...kinds('form')]}`);
+  assert.ok(kinds('comp').size >= 3 && kinds('bass').size >= 3 && kinds('density').size >= 3);
+  assert.ok(kinds('progression').size >= 6);
+  assert.ok(new Set(songs.map((s) => s.bpm)).size >= 10, 'tempos vary');
+  // the beat isn't on a rigid grid
+  const s = songs[0], beat = 60 / s.bpm;
+  const offGrid = s.beat.filter((n) => Math.abs(n.t / beat * 4 - Math.round(n.t / beat * 4)) > 0.01).length;
+  assert.ok(offGrid > s.beat.length * 0.5, 'humanised timing');
+});
+
+test('"one per song": a new lead instrument every song', async () => {
+  const { instrumentForSong } = await import('../src/music.js');
+  for (const lofi of [false, true]) for (let seed = 0; seed < 20; seed++) {
+    assert.notEqual(instrumentForSong(seed, lofi), instrumentForSong(seed + 1, lofi));
+    assert.ok(typeof instrumentForSong(seed, lofi) === 'string');
+  }
+});
+

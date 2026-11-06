@@ -260,10 +260,29 @@ export class Synth {
       o.frequency.exponentialRampToValueAtTime(46, time + 0.12);
       g.gain.setValueAtTime(0.85 * vel, time);
       g.gain.exponentialRampToValueAtTime(0.0001, time + 0.36);
+    } else if (m === 37) { // rim click (side stick): a short woody knock
+      const src = ctx.createBufferSource(), f = ctx.createBiquadFilter();
+      src.buffer = this.white;
+      f.type = 'bandpass'; f.frequency.value = 2200; f.Q.value = 3;
+      g.gain.setValueAtTime(0.5 * vel, time);
+      g.gain.exponentialRampToValueAtTime(0.0001, time + 0.035);
+      src.connect(f).connect(g);
+      src.start(time); src.stop(time + 0.05);
+      this.partial(g, 1150, 0.5 * vel, 0.04, time, 'triangle');
+      this.partial(g, 520, 0.35 * vel, 0.05, time);
+    } else if (m === 69 || m === 70) { // shaker: a soft, short swish
+      const src = ctx.createBufferSource(), f = ctx.createBiquadFilter();
+      src.buffer = this.white;
+      f.type = 'highpass'; f.frequency.value = 5200; f.Q.value = 0.7;
+      g.gain.setValueAtTime(0, time);
+      g.gain.linearRampToValueAtTime(0.07 * vel, time + 0.015);
+      g.gain.exponentialRampToValueAtTime(0.0001, time + 0.07);
+      src.connect(f).connect(g);
+      src.start(time); src.stop(time + 0.09);
     } else {
       const src = ctx.createBufferSource(), f = ctx.createBiquadFilter();
       src.buffer = this.white;
-      const snare = m >= 37 && m <= 40, open = m === 46;
+      const snare = m >= 38 && m <= 40, open = m === 46;
       f.type = snare ? 'bandpass' : 'highpass';
       f.frequency.value = snare ? 1700 : 6500;
       f.Q.value = snare ? 0.7 : 0.5;
