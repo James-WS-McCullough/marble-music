@@ -82,7 +82,11 @@ test('switch blocks: closing the filter muffles the mix, the needle adds crackle
   const quiet = await render(() => {}, 1.0);
   const crackle = await render((s) => s.setCrackle(true, 0), 1.0);
   const lifted = await render((s) => { s.setCrackle(true, 0); s.setCrackle(false, 0.1); }, 1.0);
-  assert.ok(crackle.rms > 0.005 && crackle.peak <= 1.0, `crackle rms ${crackle.rms.toFixed(4)}`);
+  assert.ok(crackle.rms > 0.001 && crackle.peak <= 1.0, `crackle rms ${crackle.rms.toFixed(4)}`);
+  // ... but it's surface noise under the music, not static on top of it
+  const music = await render((s) => [60, 64, 67, 72].forEach((m, i) => s.playHit([note(m, 0.4)], 0.05 + i * 0.25, 'lead', 'epiano')), 1.0);
+  assert.ok(crackle.rms < music.rms * 0.15, `crackle ${crackle.rms.toFixed(4)} vs music ${music.rms.toFixed(4)}`);
+  assert.ok(crackle.peak < 0.1, `no loud pops (peak ${crackle.peak.toFixed(3)})`);
   assert.ok(quiet.rms < 1e-4);
   assert.ok(lifted.rms < crackle.rms * 0.5);
   // a switch being thrown makes a click

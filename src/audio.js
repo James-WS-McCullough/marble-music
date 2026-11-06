@@ -28,17 +28,41 @@ function impulse(ctx, seconds) {
   return buf;
 }
 
-/** Vinyl crackle: sparse pops and ticks over a faint hiss (looped). */
-function crackleBuffer(ctx, seconds = 4) {
-  const n = Math.floor(ctx.sampleRate * seconds);
-  const buf = ctx.createBuffer(1, n, ctx.sampleRate);
+/**
+ * Vinyl surface noise (looped): what a record sounds like between the notes, not static. A very
+ * quiet, warm hiss (band-limited: no harsh top), a faint slow rumble, a few soft ticks and the
+ * occasional deeper pop. Seeded, and long enough (9 s) that the loop isn't noticeable.
+ */
+function crackleBuffer(ctx, seconds = 9) {
+  const sr = ctx.sampleRate, n = Math.floor(sr * seconds);
+  const buf = ctx.createBuffer(1, n, sr);
   const d = buf.getChannelData(0);
-  for (let i = 0; i < n; i++) d[i] = (Math.random() * 2 - 1) * 0.012;
-  const pops = Math.floor(seconds * 9);
-  for (let p = 0; p < pops; p++) {
-    const at = Math.floor(Math.random() * (n - 200)), amp = 0.15 + Math.random() * 0.6, len = 20 + Math.floor(Math.random() * 120);
-    for (let j = 0; j < len; j++) d[at + j] += (Math.random() * 2 - 1) * amp * Math.exp(-j / (len / 4));
+  let seed = 0x5eed;
+  const rnd = () => { seed = (seed * 1664525 + 1013904223) >>> 0; return seed / 4294967296; };
+  // warm hiss: white noise through two one-pole low-passes (~2.5 kHz) and a gentle high-pass
+  const a = Math.exp(-2 * Math.PI * 2500 / sr), hp = Math.exp(-2 * Math.PI * 180 / sr);
+  let l1 = 0, l2 = 0, h = 0, prev = 0;
+  for (let i = 0; i < n; i++) {
+    l1 = a * l1 + (1 - a) * (rnd() * 2 - 1);
+    l2 = a * l2 + (1 - a) * l1;
+    h = hp * (h + l2 - prev); prev = l2;
+    // the hiss breathes a little (like a slightly worn groove), plus a 0.55 Hz rumble
+    d[i] = h * 0.05 * (0.8 + 0.2 * Math.sin((2 * Math.PI * i) / (sr * 1.8))) + 0.004 * Math.sin((2 * Math.PI * 0.55 * i) / sr);
   }
+  // ticks: tiny, short, softened clicks (~2.5 a second); every so often a rounder, deeper pop
+  const click = (at, amp, len, tone) => {
+    let z = 0;
+    for (let j = 0; j < len && at + j < n; j++) {
+      z = tone * z + (1 - tone) * (rnd() * 2 - 1);
+      d[at + j] += z * amp * Math.exp(-j / (len / 5));
+    }
+  };
+  for (let k = 0; k < seconds * 2.5; k++) click(Math.floor(rnd() * n), 0.04 + 0.08 * rnd() ** 2, 12 + Math.floor(rnd() * 30), 0.55);
+  for (let k = 0; k < seconds * 0.35; k++) click(Math.floor(rnd() * n), 0.12 + 0.1 * rnd(), 90 + Math.floor(rnd() * 120), 0.9);
+  // crossfade the tail into the start; playback loops before the tail (loopEnd), so it's seamless
+  const f = Math.floor(sr * 0.05);
+  for (let j = 0; j < f; j++) { const w = j / f; d[j] = d[j] * w + d[n - f + j] * (1 - w); }
+  buf.loopEndTime = (n - f) / sr;
   return buf;
 }
 
@@ -86,9 +110,12 @@ export class Synth {
     this.beatBus = ctx.createGain();
     this.beatBus.gain.value = 0.9;
     this.beatBus.connect(this.out);
+    // (the surface noise sits under the music: a gentle band-pass, then into the compressor)
     this.crackle = ctx.createGain();
     this.crackle.gain.value = 0;
-    this.crackle.connect(comp);
+    const crackleTone = ctx.createBiquadFilter();
+    crackleTone.type = 'lowpass'; crackleTone.frequency.value = 5000; crackleTone.Q.value = 0.5;
+    this.crackle.connect(crackleTone).connect(comp);
     this.crackleBuf = crackleBuffer(ctx);
     this.crackleSrc = null;
     const white = ctx.createBuffer(1, ctx.sampleRate, ctx.sampleRate);
@@ -170,10 +197,12 @@ export class Synth {
       this.crackleSrc = this.ctx.createBufferSource();
       this.crackleSrc.buffer = this.crackleBuf;
       this.crackleSrc.loop = true;
+      this.crackleSrc.loopStart = 0;
+      this.crackleSrc.loopEnd = this.crackleBuf.loopEndTime;
       this.crackleSrc.connect(this.crackle);
       this.crackleSrc.start();
     }
-    this.crackle.gain.setTargetAtTime(on ? 0.5 : 0, time, 0.08);
+    this.crackle.gain.setTargetAtTime(on ? 0.6 : 0, time, 0.3); // (fades in and out, like the needle)
   }
 
   /** A switch block being thrown: a soft mechanical click. */
