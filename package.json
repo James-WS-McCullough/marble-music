@@ -1,0 +1,14 @@
+{
+  "name": "marble-music",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "python3 serve.py 8080",
+    "test": "node --test test/*.test.js",
+    "test:quick": "node --test test/music.test.js test/midi.test.js test/physics.test.js test/audio.test.js"
+  },
+  "devDependencies": {
+    "node-web-audio-api": "^1.0.4"
+  }
+}

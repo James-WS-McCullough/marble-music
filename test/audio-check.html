@@ -1,0 +1,46 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Sound font check</title>
+<body style="font:14px system-ui;background:#1b1d26;color:#e8eaf6;padding:16px">
+<h3>Sound font audition</h3>
+<p>Renders a short phrase (lead, chords, bass, drums) with each font. Click to listen.</p>
+<div id="out"></div>
+<pre id="log"></pre>
+<script>window.onerror = (m, s, l) => { document.getElementById('log').textContent += 'ERR ' + m + ' @' + l + '\n'; };
+window.addEventListener('unhandledrejection', (e) => { document.getElementById('log').textContent += 'REJ ' + e.reason + '\n' + (e.reason && e.reason.stack) + '\n'; });</script>
+<script type="module">
+import { Synth, FONTS } from '../src/audio.js';
+// a little phrase: lead melody, chord stabs, bass, and a drum beat
+const notes = [];
+const lead = [72, 74, 76, 79, 76, 74, 72, 67];
+lead.forEach((m, i) => notes.push({ note: { midi: m, vel: 0.85, dur: i === 7 ? 0.9 : 0.22, ch: 0 }, t: 0.1 + i * 0.25, role: 'lead' }));
+[[60, 64, 67], [62, 65, 69]].forEach((ch, j) => ch.forEach((m) => notes.push({ note: { midi: m, vel: 0.6, dur: 0.4, ch: 0 }, t: 0.1 + j, role: 'chord' })));
+[48, 43, 45, 41].forEach((m, i) => notes.push({ note: { midi: m, vel: 0.7, dur: 0.45, ch: 1 }, t: 0.1 + i * 0.5, role: 'bass' }));
+for (let i = 0; i < 8; i++) notes.push({ note: { midi: i % 4 === 0 ? 36 : i % 4 === 2 ? 38 : 42, vel: 0.8, ch: 9 }, t: 0.1 + i * 0.25 });
+notes.push({ note: { midi: 49, vel: 0.7, ch: 9 }, t: 2.1 });
+
+const results = {};
+for (const f of FONTS) {
+  document.getElementById('log').textContent += 'rendering ' + f.id + '\n';
+  const ctx = new OfflineAudioContext(2, 44100 * 3.5, 44100);
+  const synth = new Synth(ctx);
+  document.getElementById('log').textContent += ' constructed\n';
+  synth.font = f.id;
+  let err = null;
+  try { for (const n of notes) synth.play(n.note, n.t, n.role); } catch (e) { err = String(e); }
+  document.getElementById('log').textContent += ' scheduled ' + err + '\n';
+  const buf = await ctx.startRendering();
+  document.getElementById('log').textContent += ' rendered\n';
+  const d = buf.getChannelData(0);
+  let peak = 0, sum = 0, nan = 0;
+  for (const x of d) { if (Number.isNaN(x)) nan++; peak = Math.max(peak, Math.abs(x)); sum += x * x; }
+  results[f.id] = { err, peak: +peak.toFixed(3), rms: +Math.sqrt(sum / d.length).toFixed(4), nan };
+  const btn = document.createElement('button');
+  btn.textContent = `▶ ${f.name}`;
+  btn.style.cssText = 'display:block;margin:6px 0;padding:6px 10px';
+  btn.onclick = () => { const ac = new AudioContext(); const s = ac.createBufferSource(); s.buffer = buf; s.connect(ac.destination); s.start(); };
+  document.getElementById('out').append(btn);
+}
+console.log('AUDIO_CHECK ' + JSON.stringify(results));
+document.getElementById('log').textContent += 'AUDIO_CHECK ' + JSON.stringify(results) + '\n';
+</script>
