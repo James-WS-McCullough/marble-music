@@ -12,19 +12,25 @@ you can see. At the bottom the marbles roll into gutters, ride lifts back up, an
 All sounds are synthesised in `src/audio.js` (no samples). There are no sound fonts: **each
 object has its own voice**, so what you hear always matches what the marble hits: keys and
 wooden bars are a marimba, arcade buttons blip, metal tubes ring like tubular bells, bamboo
-knocks, bottles ping, neon tubes buzz, handbells chime, e-piano keys and vinyl records play a
+tubes give a hollow, resonant tock (an air column ringing on odd harmonics), guitar strings
+are plucked (a Karplus-Strong string through a wooden body, and they visibly twang), bottles ping, neon tubes buzz, handbells chime, e-piano keys and vinyl records play a
 warm Rhodes-style electric piano, and drums are an acoustic kit or woodblocks & cowbells.
 Open `test/audio-check.html` to audition every voice on a short phrase.
 
 ## Lofi
 
 **Lofi (from seed)** composes a laid-back lofi tune: jazzy 7th/9th chord progressions with
-smooth voice leading on vinyl records (the back marble), a swung pentatonic melody on e-piano
-keys that repeats with small variations (the front marble), and a dusty boom-bap beat in the
-background. The structure is played by **switch blocks** on the melody track — levers the
-marble flips as it passes: the intro is muffled behind a closed low-pass filter with vinyl
-crackle, a switch drops the beat in and opens the filter, another closes it for a dip and
-reopens it, and the outro takes the beat out and muffles it again (so the loop's ends match).
+smooth voice leading on vinyl records (the back marble), a swung melody on e-piano keys (the
+front marble) and a dusty boom-bap beat in the background. The melody is written like a tune: a
+one-bar hook, repeated over the next chord and answered, moving mostly by step with the strong
+beats on the chord; the song goes intro (the hook, muffled) - the beat drops - the answer - a
+contrasting B section - the hook returns and resolves.
+
+The structure is played by **switch blocks** on the melody track — levers the marble flips as
+it passes, each a hit of its own on the last beat of a phrase, so the change
+lands on the next downbeat: the intro is muffled behind a closed low-pass filter with vinyl
+crackle, a switch drops the beat in and opens the filter, another closes it for the B section
+and reopens it as the hook returns, and the outro takes the beat out and muffles it again (so the loop's ends match).
 The picture goes soft and warm while the filter is closed. Pick the **Lofi bedroom** theme
 (dusky wallpaper, framed pictures, potted plants, twinkling fairy lights).
 
@@ -47,7 +53,7 @@ npm run test:quick # music, MIDI, physics and audio only (seconds)
 ```
 
 Choose what each marble plays on — **Melody plays on** and **Harmony / bass plays on**:
-keys (melody) or wooden bars (harmony), **arcade buttons** (flash, electric blip), **metal
+keys (melody) or wooden bars (harmony), **guitar strings** over a rosewood fretboard, **arcade buttons** (flash, electric blip), **metal
 chime tubes** (shimmer, tubular bell), **bamboo tubes** sticking out of the wall (hollow
 knock), **glass bottles** with coloured water (sloshes, glassy ping), **neon light tubes**
 (glow and flare, buzzy synth) or **handbells** (swing, bright bell) — or *Mix by song

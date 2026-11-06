@@ -183,7 +183,7 @@ test('fast passages get smaller pads (like a glockenspiel run)', () => {
 
 test('every instrument kind plans cleanly (keys, bars, buttons, metal tubes, wooden tubes)', () => {
   const song = buildSong('ode');
-  for (const [melody, harmony] of [['key', 'bamboo'], ['button', 'tube'], ['bamboo', 'bamboo'], ['bottle', 'neon'], ['neon', 'bell'], ['bell', 'bottle']]) {
+  for (const [melody, harmony] of [['key', 'bamboo'], ['button', 'tube'], ['bamboo', 'bamboo'], ['bottle', 'neon'], ['neon', 'bell'], ['bell', 'bottle'], ['guitar', 'guitar'], ['epiano', 'vinyl']]) {
     const split = splitParts(song.notes, { second: 'harmony' });
     const parts = assignObjects(split.parts.map((p) => ({ ...p, groups: groupNotes(p.notes).groups })), { melody, harmony });
     const plan = planCourse(parts, { seed: 7 });

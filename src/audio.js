@@ -15,7 +15,7 @@ const CYM = (m) => m === 42 || m === 44 || m === 46 || (m >= 49 && m <= 59);
 /** Which voice plays each object (keys and bars: marimba). */
 export const OBJECT_VOICES = {
   key: 'note_marimba', bar: 'note_marimba', button: 'note_arcade', tube: 'note_tube', bamboo: 'note_bamboo',
-  bottle: 'note_bottle', neon: 'note_neon', bell: 'note_bell', epiano: 'note_rhodes', vinyl: 'note_rhodes', switch: 'note_rhodes',
+  bottle: 'note_bottle', neon: 'note_neon', bell: 'note_bell', epiano: 'note_rhodes', vinyl: 'note_rhodes', switch: 'note_rhodes', guitar: 'note_guitar',
 };
 
 function impulse(ctx, seconds) {
@@ -202,7 +202,7 @@ export class Synth {
       this.crackleSrc.connect(this.crackle);
       this.crackleSrc.start();
     }
-    this.crackle.gain.setTargetAtTime(on ? 0.6 : 0, time, 0.3); // (fades in and out, like the needle)
+    this.crackle.gain.setTargetAtTime(on ? 0.3 : 0, time, 0.3); // (fades in and out, like the needle)
   }
 
   /** A switch block being thrown: a soft mechanical click. */
@@ -344,28 +344,109 @@ export class Synth {
     src.stop(t + 0.05);
   }
 
-  /** A wooden tube: a hollow, pitched knock (bamboo / boomwhacker): short body + a woody click. */
+  /**
+   * A bamboo tube: a hollow, resonant "tock". The tube is open at the struck end and closed at the
+   * wall, so its air column rings on odd harmonics (1, 3, 5) - with a quick pitch dip as it's
+   * struck, a breathy ring of air at the note (narrow band-passed noise), a short woody mode of
+   * the cane itself and a crisp click, in a little room with a soft echo.
+   */
   note_bamboo(midi, vel, t, dur, role) {
-    const f = mtof(midi), a = 0.3 * vel * (role === 'chord' ? 0.6 : 1);
-    const bus = this.ctx.createGain();
-    const warm = this.ctx.createBiquadFilter();
-    warm.type = 'lowpass'; warm.frequency.value = Math.min(9000, f * 8);
-    bus.connect(warm).connect(this.out);
-    const send = this.ctx.createGain();
-    send.gain.value = 0.3;
-    warm.connect(send).connect(this.revIn);
-    const body = 0.35 + 0.25 * Math.max(0, (72 - midi) / 24); // lower tubes ring a little longer
-    this.partial(bus, f, a, body, t);
-    this.partial(bus, f * 2.01, a * 0.22, body * 0.4, t);
-    this.partial(bus, f * 3.03, a * 0.1, body * 0.2, t);
-    const src = this.ctx.createBufferSource(), bp = this.ctx.createBiquadFilter(), cg = this.ctx.createGain();
+    const ctx = this.ctx, f = mtof(midi), a = 0.26 * vel * (role === 'chord' ? 0.6 : 1);
+    const bus = this.voice({ rev: 0.45, echo: role === 'chord' ? 0 : 0.12 });
+    bus.gain.value = 1;
+    const warm = ctx.createBiquadFilter();
+    warm.type = 'lowpass'; warm.frequency.value = Math.min(10000, f * 10);
+    warm.connect(bus);
+    const ring = 0.55 + 0.4 * clamp((76 - midi) / 28, 0, 1); // lower tubes ring longer
+    // the air column: fundamental (struck slightly sharp, settling in a few ms) + odd harmonics
+    const o = ctx.createOscillator(), og = ctx.createGain();
+    o.frequency.setValueAtTime(f * 1.035, t);
+    o.frequency.exponentialRampToValueAtTime(f, t + 0.018);
+    og.gain.setValueAtTime(0, t);
+    og.gain.linearRampToValueAtTime(a, t + 0.002);
+    og.gain.setTargetAtTime(a * 0.45, t + 0.004, 0.05); // the knock's thump fades to the ring
+    og.gain.setTargetAtTime(0, t + 0.06, ring / 4);
+    o.connect(og).connect(warm);
+    o.start(t); o.stop(t + ring * 1.6 + 0.1);
+    this.partial(warm, f * 3, a * 0.16, ring * 0.45, t);
+    this.partial(warm, f * 5, a * 0.05, ring * 0.25, t);
+    this.partial(warm, f * 2.76, a * 0.1, 0.07, t, 'triangle'); // the cane itself (woody, short)
+    // breathy air ringing in the tube
+    const air = ctx.createBufferSource(), abp = ctx.createBiquadFilter(), ag = ctx.createGain();
+    air.buffer = this.white;
+    abp.type = 'bandpass'; abp.frequency.value = f; abp.Q.value = 28;
+    ag.gain.setValueAtTime(0, t);
+    ag.gain.linearRampToValueAtTime(a * 1.6, t + 0.004);
+    ag.gain.setTargetAtTime(0, t + 0.01, ring / 5);
+    air.connect(abp).connect(ag).connect(warm);
+    air.start(t); air.stop(t + ring + 0.1);
+    // the strike: a crisp wooden click
+    const src = ctx.createBufferSource(), bp = ctx.createBiquadFilter(), cg = ctx.createGain();
     src.buffer = this.white;
-    bp.type = 'bandpass'; bp.frequency.value = Math.min(4000, f * 3); bp.Q.value = 2.5;
-    cg.gain.setValueAtTime(a * 0.9, t);
-    cg.gain.exponentialRampToValueAtTime(0.0001, t + 0.025);
+    bp.type = 'bandpass'; bp.frequency.value = Math.min(5000, 1800 + f * 2); bp.Q.value = 4;
+    cg.gain.setValueAtTime(a * 0.7, t);
+    cg.gain.exponentialRampToValueAtTime(0.0001, t + 0.012);
     src.connect(bp).connect(cg).connect(bus);
+    src.start(t); src.stop(t + 0.03);
+  }
+
+  /**
+   * A guitar string: a plucked string (Karplus-Strong, computed once per pitch and cached): a burst
+   * of noise, shaped by where it's plucked, circulating in a loop the length of one period with a
+   * gentle damping filter - so the bright attack mellows as it rings, like a real string - through
+   * a warm wooden body.
+   */
+  guitarBuffer(midi) {
+    this.guitarCache ||= new Map();
+    if (this.guitarCache.has(midi)) return this.guitarCache.get(midi);
+    const sr = this.ctx.sampleRate, f = mtof(midi), secs = clamp(3.2 - (midi - 40) * 0.04, 1.2, 3.2);
+    const n = Math.floor(sr * secs), buf = this.ctx.createBuffer(1, n, sr), d = buf.getChannelData(0);
+    const bright = clamp(0.5 + (midi - 40) * 0.006, 0.5, 0.68); // higher strings stay brighter
+    // loop delay = period; the damping filter (bright*y + (1-bright)*y_prev) adds (1-bright) samples
+    const P = sr / f - (1 - bright), N = Math.floor(P);
+    let seed = (midi * 2654435761) >>> 0;
+    const rnd = () => { seed = (seed * 1664525 + 1013904223) >>> 0; return seed / 4294967296 * 2 - 1; };
+    // the pluck: noise for one period, plucked a fifth of the way along (a comb notch: rounder
+    // than at the very end), softened a little
+    const M = Math.min(n, N + 2), ex = Array.from({ length: M }, rnd), pick = Math.max(1, Math.round(N / 5));
+    let lp = 0;
+    for (let i = 0; i < M; i++) { lp = 0.5 * lp + 0.5 * (ex[i] - (i >= pick ? ex[i - pick] : 0)); d[i] = lp; }
+    const decay = Math.pow(0.001, 1 / (secs * f)); // per period: about -60 dB over the buffer
+    let prev = 0;
+    for (let i = M; i < n; i++) { // the output is its own delay line: read one period back
+      const x = i - P, i0 = Math.floor(x), fr = x - i0;
+      const y = d[i0] * (1 - fr) + d[i0 + 1] * fr;
+      d[i] = decay * (bright * y + (1 - bright) * prev);
+      prev = y;
+    }
+    let peak = 0;
+    for (let i = 0; i < Math.min(n, sr * 0.1); i++) peak = Math.max(peak, Math.abs(d[i]));
+    for (let i = 0; i < n; i++) d[i] /= peak || 1;
+    const fade = Math.floor(sr * 0.05);
+    for (let i = 0; i < fade; i++) d[n - 1 - i] *= i / fade;
+    this.guitarCache.set(midi, buf);
+    return buf;
+  }
+
+  note_guitar(midi, vel, t, dur, role) {
+    const ctx = this.ctx, a = 0.55 * vel * (role === 'chord' ? 0.55 : role === 'bass' ? 1.1 : 1);
+    const g = this.voice({ rev: 0.32, echo: role === 'lead' ? 0.1 : 0, pan: role === 'chord' ? (midi % 5 - 2) * 0.08 : 0 });
+    // a wooden body: a low resonance, a scooped middle, the top rounded off
+    const b1 = ctx.createBiquadFilter(), b2 = ctx.createBiquadFilter(), top = ctx.createBiquadFilter();
+    b1.type = 'peaking'; b1.frequency.value = 110; b1.Q.value = 1.2; b1.gain.value = 4;
+    b2.type = 'peaking'; b2.frequency.value = 700; b2.Q.value = 0.8; b2.gain.value = -3;
+    top.type = 'lowpass'; top.frequency.value = 5200;
+    b1.connect(b2).connect(top).connect(g);
+    const src = ctx.createBufferSource();
+    src.buffer = this.guitarBuffer(midi);
+    src.connect(b1);
+    // the string rings for its note (and a little after), then a finger damps it
+    const ringFor = Math.max(dur + 0.35, role === 'lead' ? 0.9 : 0.6);
+    g.gain.setValueAtTime(a, t);
+    g.gain.setValueAtTime(a, t + ringFor); // (anchor the level where the damping starts)
+    g.gain.setTargetAtTime(0, t + ringFor, 0.12);
     src.start(t);
-    src.stop(t + 0.04);
+    src.stop(t + Math.min(src.buffer.duration, ringFor + 0.8));
   }
 
   /** A glass bottle: a clear, glassy ping (bright partials, quick to fade). */

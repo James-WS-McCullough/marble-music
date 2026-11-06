@@ -104,6 +104,19 @@ const LANE_THEMES = [
     rail: std({ color: 0xc9a040, metalness: 0.95, roughness: 0.28 }), bracket: std({ color: 0xa8843a, metalness: 0.9, roughness: 0.35 }),
     body: std({ color: 0x7a4a2a, roughness: 0.6 }) },
 ];
+const GUITAR_BOARD = std({ color: 0x3b2418, roughness: 0.55 });
+const GUITAR_BRIDGE = std({ color: 0x1e1410, roughness: 0.5 });
+const GUITAR_SADDLE = std({ color: 0xf1e8d4, roughness: 0.4 });
+/** Pose a guitar string as two straight halves meeting at a midpoint displaced by dy (a pluck). */
+function setString(s, dy) {
+  const h = s.L / 2;
+  for (const [m, x0] of [[s.a, -h], [s.b, h]]) {
+    const dx = -x0, len = Math.hypot(dx, dy);
+    m.scale.set(1, len, 1);
+    m.position.set(x0 + dx / 2, s.y + dy / 2, s.z);
+    m.rotation.set(0, 0, Math.atan2(dy, dx) - Math.PI / 2);
+  }
+}
 const EPIANO_BODY = std({ color: 0x4a2c1c, roughness: 0.45, metalness: 0.05 });
 // record grooves: fine concentric rings
 const VINYL_TEX = (() => {
@@ -123,7 +136,7 @@ const STRIPE_TEX = (() => {
 })();
 const themeOf = (lane) => LANE_THEMES[Math.min(lane.k, LANE_THEMES.length - 1)];
 const clampN = (x, a, b) => Math.max(a, Math.min(b, x));
-const SHARED = new Set([...Object.values(MAT), ...Object.values(MARBLE_MATS), EPIANO_BODY]);
+const SHARED = new Set([...Object.values(MAT), ...Object.values(MARBLE_MATS), EPIANO_BODY, GUITAR_BOARD, GUITAR_BRIDGE, GUITAR_SADDLE]);
 for (const t of LANE_THEMES) for (const m of [t.rail, t.bracket, t.body]) SHARED.add(m);
 
 function rodBetween(a, b, r, mat) {
@@ -392,6 +405,47 @@ function padMesh(hit, lane, grp = {}) {
     flashMats.push(labelMat);
     group.quaternion.setFromUnitVectors(UP, n);
     group.userData.vinyl = { disc };
+  } else if (hit.type === 'guitar') {
+    // guitar strings stretched between two bridges over a rosewood board (a chord = several
+    // strings side by side); the marble strikes the strings, which twang when hit
+    const keys = pitched.length ? pitched : [{ midi: hit.midi }];
+    const W = 0.13, R = 0.0055, yS = thick / 2 - R;
+    const board = new THREE.Mesh(new THREE.BoxGeometry(len + 0.03, thick * 0.45, W + 0.02), GUITAR_BOARD);
+    board.position.y = -thick / 2 + thick * 0.225;
+    board.castShadow = board.receiveShadow = true;
+    group.add(board);
+    for (const fx of [-0.22, 0.05, 0.27]) { // a few frets
+      const fret = new THREE.Mesh(new THREE.BoxGeometry(0.004, 0.006, W), MAT.rail);
+      fret.position.set(fx * len, board.position.y + thick * 0.225 + 0.003, 0);
+      group.add(fret);
+    }
+    for (const fx of [-0.085, 0.16]) { // pearl inlay dots between the frets
+      const dot = new THREE.Mesh(new THREE.CylinderGeometry(0.009, 0.009, 0.002, 16), GUITAR_SADDLE);
+      dot.position.set(fx * len, board.position.y + thick * 0.225 + 0.001, 0);
+      group.add(dot);
+    }
+    for (const sx of [-1, 1]) { // the bridges (bone-white saddles on dark blocks)
+      const block = new THREE.Mesh(new THREE.BoxGeometry(0.02, yS - board.position.y, W + 0.01), GUITAR_BRIDGE);
+      block.position.set(sx * len / 2, (yS + board.position.y) / 2 - 0.004, 0);
+      const saddle = new THREE.Mesh(new THREE.BoxGeometry(0.008, 0.006, W + 0.01), GUITAR_SADDLE);
+      saddle.position.set(sx * len / 2, yS - R - 0.002, 0);
+      block.castShadow = true;
+      group.add(block, saddle);
+    }
+    const strings = [], half = new THREE.CylinderGeometry(R, R, 1, 8);
+    keys.forEach((nt, j) => {
+      const c = pitchColor(nt.midi);
+      const mat = std({ color: nt.midi < 55 ? 0xe0b070 : 0xf2f4f7, metalness: 0.6, roughness: 0.22, emissive: c, emissiveIntensity: 0 });
+      const z = keys.length > 1 ? -W / 2 + 0.012 + (W - 0.024) * (j / (keys.length - 1)) : 0;
+      const a = new THREE.Mesh(half, mat), b = new THREE.Mesh(half, mat);
+      group.add(a, b);
+      flashMats.push(mat);
+      const s = { a, b, L: len, y: yS, z, phase: j * 1.3 };
+      setString(s, 0);
+      strings.push(s);
+    });
+    group.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(t, n, new THREE.Vector3(0, 0, 1)));
+    group.userData.guitar = { strings };
   } else if (hit.type === 'switch') {
     // a chunky switch block: the marble lands on its top; on the front, a lever that flips over
     // and a lamp (orange: the beat; blue: the filter) that lights when it's thrown
@@ -862,6 +916,12 @@ function frame() {
     if (u.swing) { // bells swing on their mounting
       const w = on ? 0.12 * Math.exp(-dh * 2.5) * Math.sin(dh * 12) : 0;
       p.quaternion.copy(u.baseQ).premultiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), w));
+    }
+    if (u.guitar) { // the strings twang: a quick, fading vibration (pushed down first by the marble)
+      for (const st of u.guitar.strings) {
+        const amp = on ? 0.009 * Math.exp(-dh * 5) : 0;
+        setString(st, -amp * Math.cos(dh * 95 + st.phase * Math.min(1, dh * 20)));
+      }
     }
     if (u.vinyl) { // the record turns (and gets a spin when hit)
       u.vinyl.disc.rotation.y = -tau * 3.4 - (dh >= 0 ? 2.5 * (1 - Math.exp(-dh * 3)) : 0);

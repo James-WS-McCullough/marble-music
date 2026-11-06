@@ -93,7 +93,7 @@ test('splitting: auto picks percussion only when the song has drums; none = melo
 test('objects: each marble can have its own instrument; drums stay drums', () => {
   const make = () => splitParts(buildSong('ode').notes, { second: 'harmony' }).parts.map((p) => ({ ...p, groups: groupNotes(p.notes).groups }));
   const kinds = (parts, k) => [...new Set(parts[k].groups.map((g) => g.obj))];
-  for (const melody of ['key', 'button', 'tube', 'bamboo', 'bottle', 'neon', 'bell']) for (const harmony of ['bar', 'button', 'tube', 'bamboo', 'bottle', 'neon', 'bell']) {
+  for (const melody of ['key', 'epiano', 'guitar', 'button', 'tube', 'bamboo', 'bottle', 'neon', 'bell']) for (const harmony of ['bar', 'vinyl', 'guitar', 'button', 'tube', 'bamboo', 'bottle', 'neon', 'bell']) {
     const parts = assignObjects(make(), { melody, harmony });
     assert.deepEqual(kinds(parts, 0), [melody]);
     assert.deepEqual(kinds(parts, 1), [harmony], 'an explicit choice applies even to a bass line');
@@ -162,12 +162,21 @@ test('lofi: deterministic, slow, jazzy chords on the second marble, a beat track
     assert.equal(st.beat, s.initial.beat, 'ends as it starts (seamless loop)');
     assert.equal(st.filter, s.initial.filter);
     assert.ok(s.fx.some((f) => f.set.beat === true) && s.fx.some((f) => f.set.filter === false));
-    // switches go on the melody marble, on a note if one is there or as a note-less hit
+    // switches go on the melody marble, each as a hit of its own
     const parts = splitParts(s.notes, { second: 'harmony' }).parts.map((p) => ({ ...p, groups: groupNotes(p.notes).groups }));
     assignObjects(parts, { seed, bpm: s.bpm, bar: s.bar, lofi: true });
     attachSwitches(parts, s.fx);
     const sw = parts[0].groups.filter((g) => g.obj === 'switch');
     assert.equal(sw.length, s.fx.length);
+    assert.ok(sw.every((g) => g.notes.length === 0), 'a switch is a hit of its own, never on a note');
+    const gaps = sw.map((g) => Math.min(...parts[0].groups.filter((x) => x !== g).map((x) => Math.abs(x.t - g.t))));
+    assert.ok(gaps.every((d) => d >= 0.22), `room around each switch (${gaps.map((d) => d.toFixed(2))})`);
+    // a catchy tune, not random notes: mostly stepwise, and the hook comes back
+    const mel = s.notes.filter((n) => n.ch === 0);
+    const leaps = mel.slice(1).filter((n, i) => Math.abs(n.midi - mel[i].midi) > 5).length;
+    assert.ok(leaps / mel.length < 0.25, `mostly steps (${leaps} leaps of ${mel.length})`);
+    const barLen = 4 * 60 / s.bpm, barNotes = (b) => mel.filter((n) => n.t >= b * barLen - 1e-6 && n.t < (b + 1) * barLen - 1e-6).map((n) => n.midi);
+    assert.deepEqual(barNotes(16), barNotes(4), 'the hook returns');
     assert.ok(parts[0].groups.every((g, i, arr) => i === 0 || g.t >= arr[i - 1].t), 'still in time order');
     assert.ok(parts[0].groups.filter((g) => g.obj !== 'switch').some((g) => g.obj === 'epiano'), 'the lofi mix leads on e-piano');
     assert.ok(parts[1].groups.every((g) => g.obj === 'vinyl'), 'chords and bass on the records');

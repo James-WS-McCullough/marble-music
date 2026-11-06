@@ -43,7 +43,7 @@ for (const obj of Object.keys(OBJECT_VOICES)) {
 }
 
 // (inharmonic voices - metal tubes, bells, bottles - would fool the simple pitch estimator)
-for (const obj of ['key', 'bar', 'button', 'bamboo', 'neon', 'epiano']) {
+for (const obj of ['key', 'bar', 'button', 'bamboo', 'neon', 'epiano', 'guitar']) {
   test(`${obj}: in tune`, async () => {
     for (const midi of [64, 72]) {
       const r = await render((s) => s.playHit([note(midi, 0.6)], 0, 'lead', obj), 0.8);

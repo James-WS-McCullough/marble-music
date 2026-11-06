@@ -304,8 +304,8 @@ export function splitParts(notes, { second = 'auto' } = {}) {
 // boundaries, together in both marbles. The bass always stays on bars, drums stay drums.
 // Sets g.obj on each group; deterministic for a seed.
 /** Choices for the melody marble and for the second marble's harmony/bass ('mix' = by section). */
-export const MELODY_OBJECTS = ['mix', 'key', 'epiano', 'button', 'tube', 'bamboo', 'bottle', 'neon', 'bell'];
-export const HARMONY_OBJECTS = ['mix', 'bar', 'vinyl', 'epiano', 'button', 'tube', 'bamboo', 'bottle', 'neon', 'bell'];
+export const MELODY_OBJECTS = ['mix', 'key', 'epiano', 'guitar', 'button', 'tube', 'bamboo', 'bottle', 'neon', 'bell'];
+export const HARMONY_OBJECTS = ['mix', 'bar', 'vinyl', 'guitar', 'epiano', 'button', 'tube', 'bamboo', 'bottle', 'neon', 'bell'];
 /** The drum marble: the standard kit, woodblocks & cowbells, or both by song section. */
 export const DRUM_KITS = ['kit', 'blocks', 'mix'];
 
@@ -367,8 +367,8 @@ export function assignObjects(parts, { melody = 'mix', harmony = 'mix', drums = 
     if (choice !== 'mix') { for (const g of p.groups) g.obj = choice; continue; }
     if (p.role === 'bass' || (lofi && !lead)) { for (const g of p.groups) g.obj = lofi ? 'vinyl' : 'bar'; continue; }
     // the first tune keeps the classic instrument; each new tune gets the next one (order by seed)
-    // (lofi keeps to the mellow ones: e-piano, bamboo, bottles, bells)
-    const others = lofi ? ['bamboo', 'bottle', 'bell'] : lead ? ['button', 'tube', 'bamboo', 'bottle', 'neon', 'bell'] : ['tube', 'bamboo', 'button', 'bottle', 'neon', 'bell'];
+    // (lofi keeps to the mellow ones: e-piano, guitar, bamboo, bottles, bells)
+    const others = lofi ? ['guitar', 'bamboo', 'bottle', 'bell'] : lead ? ['guitar', 'button', 'tube', 'bamboo', 'bottle', 'neon', 'bell'] : ['guitar', 'tube', 'bamboo', 'button', 'bottle', 'neon', 'bell'];
     for (let i = others.length - 1; i > 0; i--) { const j = Math.floor(rng() * (i + 1)); [others[i], others[j]] = [others[j], others[i]]; }
     const order = [base, ...others];
     for (const g of p.groups) g.obj = order[sections.labels[sectionOf(g.t)] % order.length];
@@ -403,12 +403,17 @@ export function generateLofi(seed) {
   const degree = (d) => root + scale[(d - 1) % 7] + 12 * Math.floor((d - 1) / 7);
   const BARS = 20, notes = [], beatTrack = [];
   const swing = (b) => (Math.abs(b % 1 - 0.5) < 1e-6 ? b + 0.08 : b); // swung off-beat eighths
+  // Form (bars): 0-3 the hook, muffled | 4-11 the hook as the beat drops, then its answer |
+  // 12-15 B: a contrasting idea over the progression started from its third chord | 16-19 the
+  // hook returns and resolves. (The switch blocks below follow the same plan.)
+  const inB = (b) => b >= 12 && b < 16;
+  const chordOf = (b) => prog.chords[inB(b) ? (b - 12 + 2) % 4 : b % 4];
 
   // chords (voice-led) + bass on the second marble, channel 1
   let prev = null;
   const voicings = [];
   for (let b = 0; b < BARS; b++) {
-    const [d, q] = prog.chords[b % 4];
+    const [d, q] = chordOf(b);
     const r = degree(d), shape = CHORD_SHAPES[q];
     // choose the inversion nearest the previous voicing, around middle C
     let best = null;
@@ -430,23 +435,80 @@ export function generateLofi(seed) {
     notes.push({ t: t0 + 2 * beat, dur: beat * 1.5, midi: bass + (rng() < 0.3 ? 7 : 0), vel: 0.5, ch: 1 });
   });
 
-  // melody: a two-bar pentatonic motif over the chords, repeated with small variations
-  const penta = prog.minor ? [0, 3, 5, 7, 10] : [0, 2, 4, 7, 9];
-  const melodyNote = (i) => root + 12 + penta[((i % 5) + 5) % 5] + 12 * Math.floor(i / 5);
-  const rhythms = [[0, 1, 1.5, 3], [0.5, 1.5, 2.5, 3], [0, 0.5, 2, 3.5], [1, 1.5, 2, 3]];
-  const makeMotif = () => [0, 1].flatMap((half) => pick(rhythms).map((b) => ({ b: half * 4 + b, step: Math.floor(rng() * 7) + 2 })));
-  let motif = makeMotif();
-  for (let b = 0; b < BARS; b += 2) {
-    if (b === 8 || b === 14) motif = makeMotif(); // a new phrase for the second section
-    const resting = b < 2 || b >= BARS - 2;
-    for (const { b: mb, step } of motif) {
-      if (resting && rng() < 0.35) continue; // sparser intro and outro
-      if (rng() < 0.12) continue; // little variations
-      const vary = rng() < 0.2 ? (rng() < 0.5 ? 1 : -1) : 0;
-      const t = (b * bar + swing(mb)) * beat;
-      if (t >= BARS * barLen - beat) continue;
-      notes.push({ t, dur: beat * (0.7 + rng() * 0.8), midi: melodyNote(step + vary), vel: 0.55 + rng() * 0.2, ch: 0 });
-    }
+  // melody: a hook, built like a tune rather than random notes. Pitches are scale steps (idx 0 =
+  // the key's root, an octave above the chords); it mostly moves by step, notes on beats 1 and 3
+  // land on the chord, and phrases are question (ends up in the air) + answer (comes home).
+  const MEL0 = root + 12;
+  const midiOf = (i) => MEL0 + scale[((i % 7) + 7) % 7] + 12 * Math.floor(i / 7);
+  const isTone = (i, b) => [0, 2, 4].includes((((i - (chordOf(b)[0] - 1)) % 7) + 7) % 7);
+  // the nearest chord tone, looking first the way the tune is heading
+  const toTone = (i, b, dir = 1) => { for (const d of [0, dir, -dir, 2 * dir, -2 * dir, 3]) if (isTone(i + d, b)) return i + d; return i; };
+  const LO = -1, HI = 9; // the melody's range in scale steps (about a tenth)
+  const fit = (i) => (i > HI ? i - 7 * Math.ceil((i - HI) / 7) : i < LO ? i + 7 * Math.ceil((LO - i) / 7) : i);
+  // one-bar rhythm cells ([onset, length] in beats; laid back, a little syncopated) and note shapes
+  const CELLS = [
+    [[0, 1], [1, 0.5], [1.5, 1.5], [3, 1]],
+    [[0.5, 0.5], [1, 1], [2, 0.5], [2.5, 1.5]],
+    [[0, 0.75], [0.75, 0.75], [1.5, 1], [2.5, 1.5]],
+    [[0, 1.5], [1.5, 0.5], [2, 2]],
+    [[1, 0.5], [1.5, 0.5], [2, 1], [3, 1]],
+    [[0, 0.5], [0.5, 0.5], [1, 2], [3, 0.5], [3.5, 0.5]],
+  ];
+  const SHAPES = [[1, 1, -2, 1], [-1, -1, 2, -1], [2, -1, -1, 1], [0, 1, -1, -2], [1, -2, 1, 1], [-2, 1, 1, -1], [1, 1, 1, -3]];
+  const makeHook = () => {
+    const shape = pick(SHAPES), cells = [...CELLS].sort(() => rng() - 0.5);
+    return { a: cells[0], sa: shape, b: cells[1], sb: shape.map((x) => -x), c: cells[2], sc: pick(SHAPES) };
+  };
+  const melody = [];
+  let last = 4;
+  const playCell = (cell, shape, start, b) => {
+    let i = fit(start), same = 0;
+    cell.forEach(([on, len], k) => {
+      if (k > 0) {
+        let step = shape[(k - 1) % shape.length];
+        if (i + step > HI || i + step < LO) step = -step; // turn back at the edges of the range
+        const prevI = i;
+        i += step;
+        if (on % 2 === 0) i = toTone(i, b, step >= 0 ? 1 : -1); // strong beats sit on the chord
+        if (step !== 0 && i === prevI) i += step > 0 ? 1 : -1; // (don't let the snap undo the step)
+        same = i === prevI ? same + 1 : 0;
+        if (same >= 2) { i += i > (LO + HI) / 2 ? -1 : 1; same = 0; } // no more than two repeats
+      } else if (on % 2 === 0) i = toTone(i, b);
+      i = fit(i);
+      melody.push({ b, on, len, i, strong: on % 2 === 0 });
+    });
+    last = i;
+    return start;
+  };
+  const cadence = (b, home) => { // a step into a long note: home (the chord's root) or up in the air
+    const cr = chordOf(b)[0] - 1;
+    let target = home ? cr + 7 * Math.round((last - cr) / 7) : toTone(last + (last < HI - 2 ? 2 : -2), b);
+    target = fit(target);
+    if (target > HI - 1) target -= 7;
+    if (target < LO + 1) target += 7;
+    const lead = target + (last > target ? 1 : -1); // step into it from the side the tune comes from
+    melody.push({ b, on: 0, len: 1, i: lead, strong: true });
+    melody.push({ b, on: 1, len: home ? 2.5 : 2, i: target, strong: false });
+    last = target;
+  };
+  const phrase = (h, b0, home, center) => {
+    const s0 = playCell(h.a, h.sa, toTone(center, b0), b0); // the hook
+    playCell(h.a, h.sa, toTone(s0, b0 + 1), b0 + 1); // ... again, from the next chord (a sequence)
+    if (home) playCell(h.c, h.sc, toTone(last - 1, b0 + 2), b0 + 2); // a different turn on the way home
+    else playCell(h.b, h.sb, toTone(last + 1, b0 + 2), b0 + 2);
+    cadence(b0 + 3, home);
+  };
+  const hook = makeHook(), hookB = makeHook();
+  phrase(hook, 0, false, 4); // intro: the hook, heard through the filter
+  phrase(hook, 4, false, 4); // the beat drops in: the hook again
+  phrase(hook, 8, true, 4); // ... and its answer
+  phrase(hookB, 12, false, 7); // B: higher, a new idea
+  phrase(hook, 16, true, 4); // the hook comes back and resolves
+  for (const m of melody) {
+    const t = (m.b * bar + swing(m.on)) * beat;
+    const dur = Math.min(m.len * beat * 0.92, BARS * barLen - t - 0.05);
+    if (dur <= 0.05) continue;
+    notes.push({ t, dur, midi: midiOf(m.i), vel: (m.strong ? 0.68 : 0.56) + rng() * 0.08, ch: 0 });
   }
 
   // the beat track (background): boom-bap with swung hats
@@ -455,36 +517,49 @@ export function generateLofi(seed) {
     const kicks = [0, 2.5, ...(rng() < 0.5 ? [1.75] : [])];
     for (const k of kicks) beatTrack.push({ t: (t0 + k) * beat, midi: 36, vel: 0.8, ch: 9, dur: 0.1 });
     for (const sn of [1, 3]) beatTrack.push({ t: (t0 + sn) * beat, midi: 38, vel: 0.7, ch: 9, dur: 0.1 });
-    for (let e = 0; e < 8; e++) beatTrack.push({ t: (t0 + swing(e / 2)) * beat, midi: e === 7 && rng() < 0.3 ? 46 : 42, vel: e % 2 ? 0.45 : 0.6, ch: 9, dur: 0.05 });
+    const fill = b === 11 || b === 15; // a snare fill into the B section, and back out of it
+    for (let e = 0; e < 8; e++) {
+      if (fill && e >= 6) continue;
+      beatTrack.push({ t: (t0 + swing(e / 2)) * beat, midi: e === 7 && rng() < 0.3 ? 46 : 42, vel: e % 2 ? 0.45 : 0.6, ch: 9, dur: 0.05 });
+    }
+    if (fill) for (let k = 0; k < 4; k++) beatTrack.push({ t: (t0 + 3 + k * 0.25) * beat, midi: 38, vel: 0.35 + k * 0.12, ch: 9, dur: 0.05 });
   }
 
-  // the switch blocks (song time; the state at t = 0 is the intro's: muffled, crackle, no beat)
-  const at = (b) => b * barLen;
+  // The switch blocks (song time; the state at t = 0 is the intro's: muffled, crackle, no beat).
+  // Each is thrown on the "and of 4" at the end of a phrase - where the melody is holding its
+  // last long note, so the marble has a moment of its own for the switch - and the change lands
+  // on the next downbeat: the beat drops in, the B section dips into the filter, the hook comes
+  // back open, and the last bar takes the beat out and muffles it again (seamless loop).
+  const at = (b) => (b * bar - 0.5) * beat;
   const fx = [
     { t: at(4), set: { beat: true, filter: false } },
     { t: at(12), set: { filter: true } },
-    { t: at(14), set: { filter: false } },
-    { t: at(18), set: { beat: false, filter: true } }, // the outro: muffled again, like the start (seamless loop)
+    { t: at(16), set: { filter: false } },
+    { t: at(20), set: { beat: false, filter: true } },
   ];
   const title = pick(LOFI_TITLES);
   return { name: `lofi — ${title}`, notes, beat: beatTrack, fx, initial: { beat: false, filter: true, crackle: true }, bpm, bar, lofi: true, seed };
 }
 
 /**
- * Put the switch blocks on the melody marble: each switch time becomes the hit at that moment
- * (if there's a melody note within 0.1 s, it's played on the switch) or an extra, note-less hit.
- * Call after grouping and assignObjects; marks those groups obj = 'switch', fx = settings.
+ * Put the switch blocks on the melody marble, each as a hit of its own (no note: the marble hits
+ * the switch, not an instrument). If a melody note is too close to fit a separate hit, the switch
+ * moves a little earlier to the nearest free moment (up to a beat); only if there's none at all
+ * does it share the note's hit. Call after grouping and assignObjects.
  */
-export function attachSwitches(parts, fx, t0 = 0) {
+export function attachSwitches(parts, fx, t0 = 0, { gap = 0.22, maxShift = 0.8 } = {}) {
   const lead = parts[0];
   for (const f of fx) {
-    const t = f.t + t0;
-    let g = lead.groups.find((x) => Math.abs(x.t - t) < 0.1);
-    if (!g) {
-      g = { t, notes: [] };
+    const want = f.t + t0;
+    let g = null;
+    for (let d = 0; d <= maxShift + 1e-9; d += 0.02) {
+      const t = want - d;
+      if (lead.groups.every((x) => Math.abs(x.t - t) >= gap)) { g = { t, notes: [] }; break; }
+    }
+    if (g) {
       lead.groups.push(g);
       lead.groups.sort((a, b) => a.t - b.t);
-    }
+    } else g = lead.groups.reduce((a, x) => (Math.abs(x.t - want) < Math.abs(a.t - want) ? x : a));
     g.obj = 'switch';
     g.fx = f.set;
   }

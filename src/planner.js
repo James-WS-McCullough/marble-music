@@ -122,6 +122,8 @@ function padShapeFull(type, midi) {
     case 'cowbell': return { len: 0.13, thick: 0.085 };
     case 'vinyl': return { len: 0.24, thick: 0.035 }; // a record on its platter
     case 'switch': return { len: 0.15, thick: 0.065 }; // a lever switch block
+    // a guitar string stretched between two bridges over a wooden board (lower = longer)
+    case 'guitar': return { len: clamp(0.4 - (midi - 40) * 0.005, 0.2, 0.4), thick: 0.05 };
     default: return { len: clamp(0.32 - (midi - 48) * 0.004, 0.16, 0.32), thick: 0.05 };
   }
 }
