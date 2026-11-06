@@ -43,6 +43,7 @@ export const SONGS = {
   ode: {
     name: 'Ode to Joy (Beethoven)',
     bpm: 132,
+    bar: 4, // beats per bar
     voices: [
       {
         vel: 0.85,
@@ -62,6 +63,7 @@ export const SONGS = {
   twinkle: {
     name: 'Twinkle Twinkle Little Star',
     bpm: 110,
+    bar: 4,
     voices: [
       {
         vel: 0.85,
@@ -80,6 +82,7 @@ export const SONGS = {
   elise: {
     name: 'Für Elise, opening (Beethoven)',
     bpm: 68,
+    bar: 1.5, // 3/8 time
     voices: [
       {
         vel: 0.8,
@@ -99,7 +102,7 @@ export const SONGS = {
 export function buildSong(key) {
   const s = SONGS[key];
   const notes = s.voices.flatMap((v) => parseVoice(v.src, s.bpm, v));
-  return { name: s.name, notes, bpm: s.bpm };
+  return { name: s.name, notes, bpm: s.bpm, bar: s.bar || 4 };
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -200,7 +203,7 @@ export function generateSong(seed) {
     { t: endT, dur: sec(4), midi: root - 12, vel: 0.6, ch: 1 });
 
   const name = `Procedural #${seed} — ${NOTE_NAMES[((root % 12) + 12) % 12]} ${modeName}, ${bpm} bpm${withDrums ? ', drums' : ''}`;
-  return { name, notes, bpm };
+  return { name, notes, bpm, bar: 4 };
 }
 
 /**
@@ -294,32 +297,70 @@ export function splitParts(notes, { second = 'auto' } = {}) {
 
 // ---------------------------------------------------------------------------------------------
 // What each hit is played on. 'classic' = keys (melody) and bars (harmony/bass); 'arcade' =
-// light-up arcade buttons; 'chimes' = hanging chime tubes; 'mix' changes object phrase by phrase
-// (after a gap of >= 0.6 s, or every 8 hits) so a song gets some variety. The bass always stays
-// on bars and drums stay drums. Sets g.obj on each group; deterministic for a seed.
+// light-up arcade buttons; 'chimes' = hanging chime tubes. 'mix' follows the song's structure:
+// it's cut into sections of whole bars (4, or 8 if the tune hardly repeats), each section's
+// melody is compared with the earlier ones, and a repeat gets the same instrument again - so
+// Ode to Joy's A A' B A' plays keys, keys, buttons, keys. Instruments only change on section
+// boundaries, together in both marbles. The bass always stays on bars, drums stay drums.
+// Sets g.obj on each group; deterministic for a seed.
 export const OBJECT_MODES = ['mix', 'classic', 'arcade', 'chimes'];
 
-export function assignObjects(parts, { mode = 'mix', seed = 1 } = {}) {
+/**
+ * The song's sections: { t0, len, labels } where section i covers [t0 + i len, t0 + (i+1) len)
+ * and labels[i] is the same number for sections whose melody (near-)repeats.
+ */
+export function songSections(parts, { bpm = 120, bar = 4 } = {}) {
+  const beat = 60 / bpm;
+  const all = parts.flatMap((p) => p.groups);
+  if (!all.length) return { t0: 0, len: 1, labels: [0] };
+  const t0 = Math.min(...all.map((g) => g.t)), tEnd = Math.max(...all.map((g) => g.t));
+  const lead = parts[0].groups;
+  const label = (bars) => {
+    const len = bars * bar * beat;
+    const n = Math.max(1, Math.floor((tEnd - t0) / len + 1e-6) + 1);
+    // each section's melody as (onset in quarter beats, top pitch), pickups count with the next
+    const secs = Array.from({ length: n }, () => []);
+    for (const g of lead) {
+      const i = Math.min(n - 1, Math.floor((g.t - t0 + 0.25 * beat) / len));
+      const top = Math.max(...g.notes.filter((x) => x.ch !== 9).map((x) => x.midi), -1);
+      secs[i].push([Math.round((g.t - t0 - i * len) / (beat / 4)), top]);
+    }
+    const similar = (a, b) => {
+      if (!a.length || !b.length) return a.length === b.length;
+      const set = new Set(b.map(([o, m]) => `${o}:${m}`));
+      return a.filter(([o, m]) => set.has(`${o}:${m}`)).length / Math.max(a.length, b.length) >= 0.6;
+    };
+    const labels = [], reps = [];
+    for (const sec of secs) {
+      let l = reps.findIndex((r) => similar(sec, r));
+      if (l < 0) { l = reps.length; reps.push(sec); }
+      labels.push(l);
+    }
+    return { t0, len, labels, distinct: reps.length };
+  };
+  const four = label(4);
+  // a tune with little repetition: use longer sections, so changes stay rare
+  return four.distinct > Math.max(2, four.labels.length / 2) ? label(8) : four;
+}
+
+export function assignObjects(parts, { mode = 'mix', seed = 1, bpm = 120, bar = 4 } = {}) {
   const rng = mulberry32((seed >>> 0) ^ 0x9e3779b9);
+  const sections = mode === 'mix' ? songSections(parts, { bpm, bar }) : null;
+  const beat = 60 / bpm;
   for (const p of parts) {
     if (p.style === 'drums') continue;
     const base = p.style === 'bars' ? 'bar' : 'key';
-    const bass = p.role === 'bass';
-    if (mode === 'classic' || bass) { for (const g of p.groups) g.obj = base; continue; }
+    if (mode === 'classic' || p.role === 'bass') { for (const g of p.groups) g.obj = base; continue; }
     if (mode === 'arcade' || mode === 'chimes') { for (const g of p.groups) g.obj = mode === 'arcade' ? 'button' : 'tube'; continue; }
-    const choices = p.role === 'lead' ? ['key', 'button', 'tube'] : ['bar', 'tube', 'button'];
-    let cur = base, count = 0;
-    p.groups.forEach((g, i) => {
-      const gap = i ? g.t - p.groups[i - 1].t : 0;
-      if (i > 0 && (gap >= 0.6 || count >= 8)) {
-        const others = choices.filter((c) => c !== cur);
-        cur = others[Math.floor(rng() * others.length)];
-        count = 0;
-      }
-      g.obj = cur;
-      count++;
-    });
+    // the first tune keeps the classic instrument; each new tune gets the next one (order by seed)
+    const others = p.role === 'lead' ? ['button', 'tube'] : ['tube', 'button'];
+    if (rng() < 0.5) others.reverse();
+    const order = [base, ...others];
+    const { t0, len, labels } = sections;
+    for (const g of p.groups) {
+      const i = Math.min(labels.length - 1, Math.max(0, Math.floor((g.t - t0 + 0.25 * beat) / len)));
+      g.obj = order[labels[i] % order.length];
+    }
   }
   return parts;
 }
-

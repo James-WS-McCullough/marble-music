@@ -402,7 +402,7 @@ async function loadSong() {
     truncated ||= g.truncated;
     return { ...p, groups: g.groups };
   });
-  assignObjects(parts, { mode: $('objects').value, seed }); // keys / buttons / tubes per phrase
+  assignObjects(parts, { mode: $('objects').value, seed, bpm: song.bpm || 120, bar: song.bar || 4 }); // keys / buttons / tubes by song section
   // if a song is already planning, restart the worker so the new request doesn't queue behind it
   if ($('planning').classList.contains('on') && worker) { worker.terminate(); worker = null; }
   const myId = planId + 1;

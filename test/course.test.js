@@ -21,7 +21,7 @@ function planFor(song, second, vMax = 2.3) {
   if (!cache.has(key)) {
     const split = splitParts(song.notes, { second });
     if (split.second !== second) { cache.set(key, null); return null; }
-    const parts = assignObjects(split.parts.map((p) => ({ ...p, groups: groupNotes(p.notes).groups })), { mode: 'mix', seed: 7 });
+    const parts = assignObjects(split.parts.map((p) => ({ ...p, groups: groupNotes(p.notes).groups })), { mode: 'mix', seed: 7, bpm: song.bpm || 120, bar: song.bar || 4 });
     const t0 = Date.now();
     const plan = planCourse(parts, { seed: 7, vMax });
     cache.set(key, { plan, parts, ms: Date.now() - t0 });

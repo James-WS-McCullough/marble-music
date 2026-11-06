@@ -2,7 +2,7 @@
 // grouping into hits and splitting a song between the two marbles.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { noteToMidi, parseVoice, SONGS, buildSong, generateSong, groupNotes, splitParts, assignObjects } from '../src/music.js';
+import { noteToMidi, parseVoice, SONGS, buildSong, generateSong, groupNotes, splitParts, assignObjects, songSections } from '../src/music.js';
 
 test('note names map to MIDI numbers', () => {
   assert.equal(noteToMidi('C4'), 60);
@@ -90,24 +90,50 @@ test('splitting: auto picks percussion only when the song has drums; none = melo
   assert.equal(none.parts.length, 1);
 });
 
-test('objects: modes choose what each hit is played on; the mix changes phrase by phrase', () => {
+test('objects: classic / arcade / chimes use one kind; bass stays on bars, drums stay drums', () => {
   const make = () => splitParts(buildSong('ode').notes, { second: 'harmony' }).parts.map((p) => ({ ...p, groups: groupNotes(p.notes).groups }));
   const kinds = (parts, k) => new Set(parts[k].groups.map((g) => g.obj));
   assert.deepEqual([...kinds(assignObjects(make(), { mode: 'classic' }), 0)], ['key']);
   assert.deepEqual([...kinds(assignObjects(make(), { mode: 'arcade' }), 0)], ['button']);
   assert.deepEqual([...kinds(assignObjects(make(), { mode: 'chimes' }), 0)], ['tube']);
-  const mix = assignObjects(make(), { mode: 'mix', seed: 3 });
-  assert.ok(kinds(mix, 0).size >= 2, 'the melody gets variety');
-  assert.deepEqual([...kinds(mix, 1)], ['bar'], 'the bass stays on bars');
-  // a change only at a phrase boundary (gap >= 0.6 s) or after 8 hits
-  const g = mix[0].groups;
-  let run = 1;
-  for (let i = 1; i < g.length; i++) {
-    if (g[i].obj !== g[i - 1].obj) { assert.ok(g[i].t - g[i - 1].t >= 0.6 || run >= 8); run = 1; } else run++;
-  }
-  assert.deepEqual(assignObjects(make(), { mode: 'mix', seed: 3 })[0].groups.map((x) => x.obj), g.map((x) => x.obj), 'deterministic');
+  assert.deepEqual([...kinds(assignObjects(make(), { mode: 'mix', bpm: 132 }), 1)], ['bar'], 'the bass stays on bars');
   const drums = splitParts(generateSong(42).notes, { second: 'percussion' }).parts.map((p) => ({ ...p, groups: groupNotes(p.notes).groups }));
   assignObjects(drums, { mode: 'mix', seed: 1 });
   assert.ok(drums[1].groups.every((x) => x.obj === undefined), 'drums stay drums');
 });
 
+test('objects mix follows the song: sections of whole bars, repeats keep their instrument', () => {
+  const song = buildSong('ode');
+  const parts = splitParts(song.notes, { second: 'harmony' }).parts.map((p) => ({ ...p, groups: groupNotes(p.notes).groups }));
+  const sec = songSections(parts, { bpm: song.bpm, bar: song.bar });
+  assert.ok(Math.abs(sec.len - 4 * song.bar * 60 / song.bpm) < 1e-9, 'four-bar sections');
+  assert.deepEqual(sec.labels, [0, 0, 1, 0], "Ode to Joy is A A' B A'");
+  assignObjects(parts, { mode: 'mix', seed: 3, bpm: song.bpm, bar: song.bar });
+  const objAt = (t) => parts[0].groups.find((g) => g.t >= t - 1e-9).obj;
+  const L = sec.len;
+  assert.equal(objAt(0), 'key', 'the first tune keeps the classic keys');
+  assert.equal(objAt(L), 'key', 'its repeat too');
+  assert.notEqual(objAt(2 * L), 'key', 'the contrasting section changes instrument');
+  assert.equal(objAt(3 * L), 'key', 'and the theme comes back on keys');
+  // changes only happen on section boundaries (pickups may lead in by a quarter beat)
+  const beat = 60 / song.bpm, g = parts[0].groups;
+  for (let i = 1; i < g.length; i++) if (g[i].obj !== g[i - 1].obj) {
+    const pos = ((g[i].t - sec.t0 + 0.25 * beat) % L + L) % L;
+    assert.ok(pos < 0.25 * beat + 1e-6 || L - pos < 1e-6, `change at ${g[i].t.toFixed(2)} s is on a section boundary`);
+  }
+  // both marbles change together: the harmony uses the melody's sections (when it isn't the bass)
+  const tw = buildSong('twinkle');
+  const twParts = splitParts(tw.notes, { second: 'harmony' }).parts.map((p) => ({ ...p, groups: groupNotes(p.notes).groups }));
+  assert.deepEqual(songSections(twParts, { bpm: tw.bpm, bar: tw.bar }).labels, [0, 1, 0], 'Twinkle is A B A');
+  const again = splitParts(song.notes, { second: 'harmony' }).parts.map((p) => ({ ...p, groups: groupNotes(p.notes).groups }));
+  assignObjects(again, { mode: 'mix', seed: 3, bpm: song.bpm, bar: song.bar });
+  assert.deepEqual(again[0].groups.map((x) => x.obj), g.map((x) => x.obj), 'deterministic');
+});
+
+test('a tune with little repetition gets longer sections (rare changes)', () => {
+  const song = generateSong(1);
+  const parts = splitParts(song.notes, { second: 'harmony' }).parts.map((p) => ({ ...p, groups: groupNotes(p.notes).groups }));
+  const sec = songSections(parts, { bpm: song.bpm, bar: song.bar });
+  assert.ok(sec.len >= 8 * song.bar * 60 / song.bpm - 1e-9, 'eight-bar sections');
+  assert.ok(sec.labels.length <= 4);
+});
