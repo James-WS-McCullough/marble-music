@@ -1,24 +1,17 @@
-// Sound fonts: render each one offline (node-web-audio-api) and check the output is sane:
-// every voice makes sound, nothing is NaN or clipping, and notes are in tune.
+// Sounds: render offline (node-web-audio-api) and check the output is sane: every object's voice
+// makes sound, nothing is NaN or clipping, pitched voices are in tune, and the lofi master
+// effects (filter, crackle) really do what the switch blocks say.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { OfflineAudioContext } from 'node-web-audio-api';
-import { Synth, FONTS } from '../src/audio.js';
+import { Synth, OBJECT_VOICES } from '../src/audio.js';
 
 const SR = 22050;
 const note = (midi, dur = 0.4, ch = 0, vel = 0.8) => ({ midi, dur, ch, vel });
-const PHRASE = {
-  lead: [72, 74, 76, 79].map((m, i) => ({ n: note(m, 0.25), t: 0.05 + i * 0.25 })),
-  chord: [[60, 64, 67]].flatMap((ch) => ch.map((m) => ({ n: note(m, 0.5), t: 0.05 }))),
-  harmony: [64, 65].map((m, i) => ({ n: note(m, 0.45, 1), t: 0.05 + i * 0.5 })),
-  bass: [43, 41].map((m, i) => ({ n: note(m, 0.45, 1), t: 0.05 + i * 0.5 })),
-  drums: [36, 38, 42, 49].map((m, i) => ({ n: note(m, 0.1, 9), t: 0.05 + i * 0.25 })),
-};
 
-async function render(font, fn, seconds = 1.6) {
+async function render(fn, seconds = 1.6) {
   const ctx = new OfflineAudioContext(1, Math.round(SR * seconds), SR);
   const synth = new Synth(ctx);
-  synth.font = font;
   fn(synth);
   const d = (await ctx.startRendering()).getChannelData(0);
   let peak = 0, sum = 0, nan = 0;
@@ -38,58 +31,61 @@ function pitch(d, a = 0.06, b = 0.3) {
   return SR / lag;
 }
 
-for (const { id } of FONTS) {
-  test(`font ${id}: every voice sounds, no NaN, no clipping`, async () => {
-    for (const [role, notes] of Object.entries(PHRASE)) {
-      const r = await render(id, (s) => notes.forEach(({ n, t }) => s.play(n, t, role === 'drums' ? 'lead' : role)));
-      assert.equal(r.nan, 0, `${role}: no NaN`);
-      assert.ok(r.rms > 0.002, `${role}: audible (rms ${r.rms.toFixed(4)})`);
-      assert.ok(r.peak <= 1.0, `${role}: no clipping (peak ${r.peak.toFixed(2)})`);
+for (const obj of Object.keys(OBJECT_VOICES)) {
+  test(`${obj}: its own sound, audible and clean, alone and as a chord`, async () => {
+    for (const [notes, role] of [[[note(67)], 'lead'], [[note(76), note(64), note(67)], 'lead'], [[note(43, 0.6, 1)], 'bass']]) {
+      const r = await render((s) => s.playHit(notes, 0.05, role, obj));
+      assert.equal(r.nan, 0, 'no NaN');
+      assert.ok(r.rms > 0.002, `audible (rms ${r.rms.toFixed(4)})`);
+      assert.ok(r.peak <= 1.0, `no clipping (peak ${r.peak.toFixed(2)})`);
     }
-    // everything at once, through playHit (lead + chord + drum in one pad hit)
-    const all = await render(id, (s) => {
-      for (const [role, notes] of Object.entries(PHRASE)) if (role !== 'chord') notes.forEach(({ n, t }) => s.play(n, t, role === 'drums' ? 'lead' : role));
-      s.playHit([note(76, 0.5), note(60, 0.5), note(67, 0.5), note(36, 0.1, 9)], 0.6, 'lead');
-    });
-    assert.equal(all.nan, 0);
-    assert.ok(all.peak <= 1.05, `full mix peak ${all.peak.toFixed(2)}`);
   });
+}
 
-  // the glockenspiel's inharmonic overtones fool a simple pitch estimator, so it's skipped
-  if (id !== 'glock') test(`font ${id}: lead notes are in tune`, async () => {
+// (inharmonic voices - metal tubes, bells, bottles - would fool the simple pitch estimator)
+for (const obj of ['key', 'bar', 'button', 'bamboo', 'neon', 'epiano']) {
+  test(`${obj}: in tune`, async () => {
     for (const midi of [64, 72]) {
-      const r = await render(id, (s) => s.play(note(midi, 0.6), 0, 'lead'), 0.8);
-      const want = 440 * 2 ** ((midi - 69) / 12), got = pitch(r.d);
+      const r = await render((s) => s.playHit([note(midi, 0.6)], 0, 'lead', obj), 0.8);
+      const want = 440 * 2 ** ((midi - 69) / 12), got = pitch(r.d, 0.08, 0.3);
       const cents = 1200 * Math.log2(got / want);
-      assert.ok(Math.abs(cents) < 30, `${id} midi ${midi}: ${got.toFixed(1)} Hz vs ${want.toFixed(1)} (${cents.toFixed(0)} cents)`);
+      assert.ok(Math.abs(cents) < 30, `midi ${midi}: ${got.toFixed(1)} Hz vs ${want.toFixed(1)} (${cents.toFixed(0)} cents)`);
     }
   });
 }
 
-for (const obj of ['button', 'tube', 'bamboo', 'bottle', 'neon', 'bell']) {
-  test(`${obj}s have their own sound: audible, clean, in tune, with chords`, async () => {
-    for (const font of ['nes', 'mallets']) {
-      const r = await render(font, (s) => s.playHit([note(72, 0.4), note(64, 0.4), note(67, 0.4), note(36, 0.1, 9)], 0.05, 'lead', font, obj));
-      assert.equal(r.nan, 0);
-      assert.ok(r.rms > 0.002 && r.peak <= 1.0, `${obj}/${font}: rms ${r.rms.toFixed(4)} peak ${r.peak.toFixed(2)}`);
-    }
-    if (!['tube', 'bell', 'bottle'].includes(obj)) { // (inharmonic overtones would fool the simple pitch estimator)
-      const r = await render('nes', (s) => s.playHit([note(64, 0.6)], 0, 'lead', 'nes', obj), 0.8);
-      const cents = 1200 * Math.log2(pitch(r.d, 0.08, 0.3) / (440 * 2 ** ((64 - 69) / 12)));
-      assert.ok(Math.abs(cents) < 30, `${cents.toFixed(0)} cents`);
-    }
-  });
-}
-
-test('woodblocks and cowbells: the blocks kit and real MIDI cowbell/woodblock notes', async () => {
-  for (const [notes, obj] of [[[note(38, 0.1, 9), note(45, 0.1, 9), note(42, 0.1, 9)], 'blocks'], [[note(56, 0.1, 9), note(76, 0.1, 9), note(77, 0.1, 9)], 'kit']]) {
-    const r = await render('nes', (s) => s.playHit(notes, 0.05, 'drums', 'nes', obj), 0.8);
+test('drums: the acoustic kit, and woodblocks & cowbells (the blocks kit and real MIDI notes)', async () => {
+  for (const [notes, obj] of [[[note(36, 0.1, 9), note(38, 0.1, 9), note(42, 0.1, 9), note(49, 0.1, 9)], 'kit'],
+    [[note(38, 0.1, 9), note(45, 0.1, 9), note(42, 0.1, 9)], 'blocks'], [[note(56, 0.1, 9), note(76, 0.1, 9), note(77, 0.1, 9)], 'kit']]) {
+    const r = await render((s) => s.playHit(notes, 0.05, 'drums', obj), 0.8);
     assert.equal(r.nan, 0);
     assert.ok(r.rms > 0.002 && r.peak <= 1.0, `${obj}: rms ${r.rms.toFixed(4)} peak ${r.peak.toFixed(2)}`);
   }
-  // the blocks kit really swaps the sound (a different signal from the standard kit's snare)
-  const kit = await render('nes', (s) => s.playHit([note(38, 0.1, 9)], 0.05, 'drums', 'nes', 'kit'), 0.4);
-  const blocks = await render('nes', (s) => s.playHit([note(38, 0.1, 9)], 0.05, 'drums', 'nes', 'blocks'), 0.4);
-  assert.ok(Math.abs(kit.rms - blocks.rms) > 1e-4);
+  const kit = await render((s) => s.playHit([note(38, 0.1, 9)], 0.05, 'drums', 'kit'), 0.4);
+  const blocks = await render((s) => s.playHit([note(38, 0.1, 9)], 0.05, 'drums', 'blocks'), 0.4);
+  assert.ok(Math.abs(kit.rms - blocks.rms) > 1e-4, 'the blocks kit really swaps the sound');
 });
 
+test('lofi beat track: kick, snare and hats render cleanly', async () => {
+  const r = await render((s) => { s.setLofi(true, 0); [36, 42, 38, 42, 36, 46, 38, 42].forEach((m, i) => s.playBeat(note(m, 0.1, 9), 0.05 + i * 0.18)); });
+  assert.equal(r.nan, 0);
+  assert.ok(r.rms > 0.005 && r.peak <= 1.0, `rms ${r.rms.toFixed(4)} peak ${r.peak.toFixed(2)}`);
+});
+
+test('switch blocks: closing the filter muffles the mix, the needle adds crackle', async () => {
+  // a bright sound (hats) with the filter open vs closed: closed loses most of its energy
+  const hats = (s) => { for (let i = 0; i < 8; i++) s.playBeat(note(42, 0.1, 9), 0.2 + i * 0.12); };
+  const open = await render((s) => hats(s), 1.4);
+  const closed = await render((s) => { s.setFilter(true, 0); hats(s); }, 1.4);
+  assert.ok(closed.rms < open.rms * 0.35, `filter closed: ${closed.rms.toFixed(4)} vs open ${open.rms.toFixed(4)}`);
+  // crackle on adds signal; lifting the needle again silences it
+  const quiet = await render(() => {}, 1.0);
+  const crackle = await render((s) => s.setCrackle(true, 0), 1.0);
+  const lifted = await render((s) => { s.setCrackle(true, 0); s.setCrackle(false, 0.1); }, 1.0);
+  assert.ok(crackle.rms > 0.005 && crackle.peak <= 1.0, `crackle rms ${crackle.rms.toFixed(4)}`);
+  assert.ok(quiet.rms < 1e-4);
+  assert.ok(lifted.rms < crackle.rms * 0.5);
+  // a switch being thrown makes a click
+  const click = await render((s) => s.playHit([], 0.05, 'lead', 'switch'), 0.3);
+  assert.ok(click.rms > 0.0005 && click.nan === 0);
+});

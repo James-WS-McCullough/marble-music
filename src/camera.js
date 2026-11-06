@@ -10,7 +10,7 @@ const smooth = (a, b, x) => { const u = Math.min(1, Math.max(0, (x - a) / (b - a
 export function seamPose(plan, which, aspect) {
   const c = plan.seam[which], { w, h } = plan.seam.plate;
   // (the camera looks slightly down, so the view reaches further below the stub: keep a margin)
-  return { x: c.x, y: c.y, h: Math.min(2.0, h - 1.4, (w - 1.0) / aspect) };
+  return { x: c.x, y: c.y, h: Math.min(1.5, h - 1.0, (w - 0.7) / aspect) };
 }
 
 /** Framing of the marbles that are playing right now (a hit in the last 1 s or next 1.5 s). */
@@ -29,35 +29,37 @@ function followAt(plan, tau, aspect) {
   return { x: (x0 + x1) / 2, y: (y0 + y1) / 2, h: Math.max(2.5, y1 - y0 + 1.5, (x1 - x0 + 1.8) / aspect) };
 }
 
-/** When the first marble leaves the start seam frame, and when it enters the end one. */
+/** The first marble's first and last hits (between them, the camera follows the music). */
 function seamTimes(plan) {
   if (plan._seamTimes) return plan._seamTimes;
-  const L0 = plan.lanes[0], { boxTop, boxBottom } = plan.seam;
-  const inside = (b, m) => m.x > b.x0 && m.x < b.x1 && m.y > b.y0 && m.y < b.y1;
-  let tOut = 0, tIn = plan.D;
-  for (let t = 0; t < plan.D; t += 0.02) if (inside(boxTop, marbleAt(L0, t))) tOut = t; else if (t > 0.2) break;
-  for (let t = plan.D; t > 0; t -= 0.02) if (inside(boxBottom, marbleAt(L0, t))) tIn = t; else if (t < plan.D - 0.2) break;
-  return (plan._seamTimes = { tOut, tIn });
+  const hits = plan.lanes[0].hits;
+  return (plan._seamTimes = { first: hits[0].t, last: hits[hits.length - 1].t });
 }
 
 /**
  * Camera framing at loop time tau: { x, y } to look at and h = the height of wall in view.
- * Follows the playing marbles (smoothed over a short window), and blends into the fixed seam
- * framing at the very start and end of the loop.
+ * Follows the playing marbles (smoothed over a short window). Around the loop seam it tracks the
+ * first marble itself - out of the start stub, and into the end stub - zoomed in like the seam
+ * shot. At t = 0 and t = D that marble sits hidden in its stub, so both ends are exactly the
+ * seam shot (the loop is seamless) without ever holding a static frame. `zoom` (> 1 = closer)
+ * changes the follow framing only: the seam shot stays as it is, filling the seam sign.
  */
-export function cameraPose(plan, tau, aspect) {
+export function cameraPose(plan, tau, aspect, { zoom = 1 } = {}) {
   const n = 17, win = 1.6;
   let x = 0, y = 0, h = 0;
   for (let j = 0; j < n; j++) {
     const t = Math.min(plan.D, Math.max(0, tau + (j / (n - 1) - 0.5) * win));
     const f = followAt(plan, t, aspect);
-    x += f.x / n; y += f.y / n; h += f.h / n;
+    x += f.x / n; y += f.y / n; h += f.h / n / zoom;
   }
-  const { tOut, tIn } = seamTimes(plan);
+  const { first, last } = seamTimes(plan);
   const blend = (p, s, w) => ({ x: p.x + (s.x - p.x) * w, y: p.y + (s.y - p.y) * w, h: p.h + (s.h - p.h) * w });
+  const m = marbleAt(plan.lanes[0], tau);
+  const seamH = seamPose(plan, 'top', aspect).h;
+  const track = { x: m.x, y: m.y, h: seamH };
   let pose = { x, y, h };
-  pose = blend(pose, seamPose(plan, 'top', aspect), 1 - smooth(tOut, tOut + 1.6, tau));
-  pose = blend(pose, seamPose(plan, 'bottom', aspect), smooth(tIn - 1.6, tIn, tau));
+  pose = blend(pose, track, 1 - smooth(first - 0.9, first + 0.5, tau));
+  pose = blend(pose, track, smooth(last - 0.2, last + 0.9, tau));
   return pose;
 }
 

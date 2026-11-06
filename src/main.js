@@ -8,7 +8,8 @@ import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { planCourse, marbleAt, padShape, MARBLE_R, TUBE_R, WALL_MOUNTED, rehydratePlan } from './planner.js';
 import { cameraPose, cameraPlacement } from './camera.js';
 import { THEMES } from './themes.js';
-import { buildSong, generateSong, groupNotes, splitParts, assignObjects } from './music.js';
+import { buildSong, generateSong, generateLofi, attachSwitches, groupNotes, splitParts, assignObjects } from './music.js';
+import { appendItem, itemAt, collect, settingsAt } from './timeline.js';
 import { parseMidi } from './midi.js';
 import { Synth } from './audio.js';
 import { mulberry32 } from './util.js';
@@ -18,7 +19,7 @@ const $ = (id) => document.getElementById(id);
 // A cached copy of an older page (missing newer controls) can't run this code: reload once to
 // get the current page, rather than failing silently.
 {
-  const needed = ['song', 'seed', 'font', 'second', 'pace', 'melodyObj', 'harmonyObj', 'drumKit', 'theme', 'cam', 'planning', 'info'];
+  const needed = ['song', 'seed', 'second', 'zoom', 'bright', 'glow', 'deco', 'volume', 'lofiFx', 'pace', 'melodyObj', 'harmonyObj', 'drumKit', 'theme', 'cam', 'planning', 'info'];
   const missing = needed.filter((id) => !$(id));
   if (missing.length) {
     let tried = false;
@@ -69,7 +70,8 @@ scene.add(sun, sun.target);
 
 const composer = new EffectComposer(renderer);
 composer.addPass(new RenderPass(scene, camera));
-composer.addPass(new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), 0.15, 0.3, 0.95));
+const bloom = new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), 0.15, 0.3, 0.95);
+composer.addPass(bloom);
 composer.addPass(new OutputPass());
 
 // ------------------------------------------------------------------ materials & helpers
@@ -102,9 +104,26 @@ const LANE_THEMES = [
     rail: std({ color: 0xc9a040, metalness: 0.95, roughness: 0.28 }), bracket: std({ color: 0xa8843a, metalness: 0.9, roughness: 0.35 }),
     body: std({ color: 0x7a4a2a, roughness: 0.6 }) },
 ];
+const EPIANO_BODY = std({ color: 0x4a2c1c, roughness: 0.45, metalness: 0.05 });
+// record grooves: fine concentric rings
+const VINYL_TEX = (() => {
+  const c = document.createElement('canvas'); c.width = c.height = 256;
+  const g = c.getContext('2d');
+  g.fillStyle = '#0d0d10'; g.fillRect(0, 0, 256, 256);
+  for (let r = 40; r < 127; r += 1.5) { g.strokeStyle = `rgba(255,255,255,${0.03 + 0.04 * Math.sin(r * 0.7) ** 2})`; g.beginPath(); g.arc(128, 128, r, 0, Math.PI * 2); g.stroke(); }
+  const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; return t;
+})();
+// hazard stripes on a switch block's top
+const STRIPE_TEX = (() => {
+  const c = document.createElement('canvas'); c.width = 128; c.height = 32;
+  const g = c.getContext('2d');
+  g.fillStyle = '#1f2328'; g.fillRect(0, 0, 128, 32); g.fillStyle = '#ffc533';
+  for (let x = -32; x < 160; x += 24) { g.beginPath(); g.moveTo(x, 32); g.lineTo(x + 12, 32); g.lineTo(x + 44, 0); g.lineTo(x + 32, 0); g.fill(); }
+  const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; return t;
+})();
 const themeOf = (lane) => LANE_THEMES[Math.min(lane.k, LANE_THEMES.length - 1)];
 const clampN = (x, a, b) => Math.max(a, Math.min(b, x));
-const SHARED = new Set([...Object.values(MAT), ...Object.values(MARBLE_MATS)]);
+const SHARED = new Set([...Object.values(MAT), ...Object.values(MARBLE_MATS), EPIANO_BODY]);
 for (const t of LANE_THEMES) for (const m of [t.rail, t.bracket, t.body]) SHARED.add(m);
 
 function rodBetween(a, b, r, mat) {
@@ -157,7 +176,7 @@ function applyTheme() {
   theme = THEMES[$('theme').value] || THEMES.sky;
   scene.background = new THREE.Color(theme.background);
   scene.fog = theme.fog ? new THREE.Fog(...theme.fog) : null;
-  renderer.toneMappingExposure = theme.exposure;
+  applySettings();
   scene.environmentIntensity = theme.env;
   hemi.color.set(theme.hemi[0]); hemi.groundColor.set(theme.hemi[1]); hemi.intensity = theme.hemi[2];
   sun.color.set(theme.sun[0]); sun.intensity = theme.sun[1];
@@ -165,8 +184,19 @@ function applyTheme() {
 
 // ------------------------------------------------------------------ state
 let synth = null, startTime = 0, playing = false;
-let plan = null, events = [], world = null, pads = [], marbles = [], anims = [];
+let plan = null, world = null, pads = [], marbles = [], anims = [];
 let schedAbs = 0, currentSong = null, customMidi = null;
+// What's playing: a timeline of songs on one clock (one item, looping - or, in endless mode, a new
+// song appended at a loop boundary as each one nears its end). `active` is the one on screen.
+let items = [], active = null;
+
+/** Display settings (the Settings section): brightness, glow; volume. */
+function applySettings() {
+  renderer.toneMappingExposure = theme.exposure * parseFloat($('bright').value);
+  bloom.strength = parseFloat($('glow').value);
+  synth?.setVolume(parseFloat($('volume').value));
+  for (const id of ['zoom', 'bright', 'glow', 'volume']) $(`${id}Val`).textContent = `${Math.round(parseFloat($(id).value) * 100)}%`;
+}
 
 function disposeWorld() {
   if (!world) return;
@@ -178,7 +208,7 @@ function disposeWorld() {
 }
 
 // ------------------------------------------------------------------ building the scene
-function padMesh(hit, lane) {
+function padMesh(hit, lane, grp = {}) {
   const { len, thick } = padShape(hit.type, hit.midi, hit.scale);
   const n = new THREE.Vector3(hit.normal.x, hit.normal.y, 0);
   const t = new THREE.Vector3(hit.normal.y, -hit.normal.x, 0);
@@ -339,17 +369,69 @@ function padMesh(hit, lane) {
     group.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(t, n, new THREE.Vector3(0, 0, 1)));
     flashMats.push(bandMat);
     group.userData.tube = true;
-  } else if (hit.type === 'key' || hit.type === 'bar' || hit.type === 'chime') {
+  } else if (hit.type === 'vinyl') {
+    // a record on a little turntable platter: black grooves, a coloured label, a chrome spindle
+    const r = len / 2;
+    const plinth = new THREE.Mesh(new THREE.BoxGeometry(len + 0.04, thick * 0.55, 0.16), std({ color: 0x6b4a32, roughness: 0.55 }));
+    plinth.position.y = -thick * 0.22;
+    plinth.castShadow = plinth.receiveShadow = true;
+    const disc = new THREE.Group();
+    const grooveTex = VINYL_TEX;
+    const rec = new THREE.Mesh(new THREE.CylinderGeometry(r, r, 0.008, 48), [std({ color: 0x101012, roughness: 0.35 }), std({ map: grooveTex, roughness: 0.3, metalness: 0.2 }), std({ color: 0x101012 })]);
+    rec.position.y = thick / 2 - 0.004;
+    const c = pitchColor(hit.midi);
+    const labelMat = std({ color: c, roughness: 0.6, emissive: c, emissiveIntensity: 0 });
+    const label = new THREE.Mesh(new THREE.CylinderGeometry(r * 0.32, r * 0.32, 0.0085, 32), labelMat);
+    label.position.y = thick / 2 - 0.004;
+    const dot = new THREE.Mesh(new THREE.BoxGeometry(r * 0.12, 0.009, 0.01), std({ color: 0xffffff, roughness: 0.6 }));
+    dot.position.set(r * 0.18, thick / 2 - 0.004, 0);
+    disc.add(rec, label, dot);
+    const spindle = new THREE.Mesh(new THREE.CylinderGeometry(0.005, 0.005, 0.02, 10), MAT.rail);
+    spindle.position.y = thick / 2;
+    group.add(plinth, disc, spindle);
+    flashMats.push(labelMat);
+    group.quaternion.setFromUnitVectors(UP, n);
+    group.userData.vinyl = { disc };
+  } else if (hit.type === 'switch') {
+    // a chunky switch block: the marble lands on its top; on the front, a lever that flips over
+    // and a lamp (orange: the beat; blue: the filter) that lights when it's thrown
+    const set = grp.fx || {};
+    const col = 'beat' in set ? 0xff9a3c : 0x5ab8ff;
+    const body = new THREE.Mesh(new THREE.BoxGeometry(len, thick, 0.16), std({ color: 0x3a3f4a, roughness: 0.5, metalness: 0.3 }));
+    body.castShadow = body.receiveShadow = true;
+    const top = new THREE.Mesh(new THREE.BoxGeometry(len * 0.92, 0.006, 0.14), std({ map: STRIPE_TEX, roughness: 0.6 }));
+    top.position.y = thick / 2 + 0.003;
+    const lampMat = std({ color: col, emissive: col, emissiveIntensity: 0.06, roughness: 0.3 });
+    const lamp = new THREE.Mesh(new THREE.SphereGeometry(0.014, 14, 10), lampMat);
+    lamp.position.set(len * 0.3, 0, 0.082);
+    const lever = new THREE.Group();
+    const stick = new THREE.Mesh(new THREE.CylinderGeometry(0.006, 0.006, 0.06, 10), MAT.rail);
+    stick.position.y = 0.03;
+    const knob = new THREE.Mesh(new THREE.SphereGeometry(0.013, 14, 10), std({ color: 0xd8312a, roughness: 0.35 }));
+    knob.position.y = 0.06;
+    lever.add(stick, knob);
+    lever.rotation.x = Math.PI / 2 - 0.35; // pointing out of the front face, towards the camera
+    const pivot = new THREE.Group();
+    pivot.position.set(-len * 0.12, 0, 0.08);
+    pivot.add(lever);
+    const plate = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.03, 0.006), std({ color: 0x9aa3ad, metalness: 0.7, roughness: 0.35 }));
+    plate.position.set(-len * 0.12, 0, 0.081);
+    group.add(body, top, lamp, plate, pivot);
+    group.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(t, n, new THREE.Vector3(0, 0, 1)));
+    group.userData.switch = { lever: pivot, lampMat };
+  } else if (hit.type === 'key' || hit.type === 'bar' || hit.type === 'chime' || hit.type === 'epiano') {
     // a chunky slab with a bright coloured top; a chord = several coloured strips side by side
     const keys = pitched.length ? pitched : [{ midi: hit.midi }];
     const W = 0.14, w = W / keys.length, cap = 0.014;
-    const body = new THREE.Mesh(new THREE.BoxGeometry(len, thick - cap, W), themeOf(lane).body);
+    const ep = hit.type === 'epiano';
+    const body = new THREE.Mesh(new THREE.BoxGeometry(len, thick - cap, W), ep ? EPIANO_BODY : themeOf(lane).body);
     body.position.y = -cap / 2;
     body.castShadow = body.receiveShadow = true;
     group.add(body);
     keys.forEach((nt, j) => {
       const c = pitchColor(nt.midi);
-      const mat = std({ color: c, roughness: 0.4, emissive: c, emissiveIntensity: 0 });
+      // (e-piano keys are cream ivory that glow in their note's colour when played)
+      const mat = std({ color: ep ? 0xf2e6c8 : c, roughness: 0.4, emissive: c, emissiveIntensity: 0 });
       const k = new THREE.Mesh(new THREE.BoxGeometry(len, cap, w - (keys.length > 1 ? 0.008 : 0)), mat);
       k.position.set(0, thick / 2 - cap / 2, -W / 2 + w * (j + 0.5));
       k.castShadow = true;
@@ -456,13 +538,9 @@ function stubMeshes(st, lane, pipeMat) {
   return out;
 }
 
-function buildScene() {
-  disposeWorld();
-  world = new THREE.Group();
-  scene.add(world);
-  pads = [];
-  marbles = [];
-  anims = [];
+/** Everything for one song's course, built off-screen (shown by showScene). */
+function buildScene(plan, signTitle) {
+  const world = new THREE.Group(), pads = [], marbles = [];
   const b = plan.bounds;
   const x0 = b.x0 - 1.5, x1 = b.x1 + 1.5, yBot = b.y0 - 1.5, yTop = b.y1 + 1.5;
 
@@ -478,7 +556,7 @@ function buildScene() {
 
   // the two seam signs behind the first marble's start and end stubs (identical: seamless loop)
   for (const c of [plan.seam.top, plan.seam.bottom]) {
-    const sign = theme.sign(plan.seam.plate.w, plan.seam.plate.h, currentSong.name.replace(/ —.*/, ''));
+    const sign = theme.sign(plan.seam.plate.w, plan.seam.plate.h, signTitle);
     sign.position.set(c.x, c.y, 0.011);
     world.add(sign);
   }
@@ -510,18 +588,18 @@ function buildScene() {
     }
     return null;
   };
-  anims = theme.decorate({ rng, area: wallW * wallH, place, free, mark, add: (m) => world.add(m), bounds: { x0, x1, y0: yBot, y1: yTop } });
+  const anims = theme.decorate({ rng, area: wallW * wallH * parseFloat($('deco').value), place, free, mark, add: (m) => world.add(m), bounds: { x0, x1, y0: yBot, y1: yTop } });
 
   // lanes
   const pipeMat = std({ color: theme.pipe, roughness: 0.35, metalness: 0.1 });
   for (const lane of plan.lanes) {
-    for (const h of lane.hits) {
-      const m = padMesh(h, lane);
+    lane.hits.forEach((h, i) => {
+      const m = padMesh(h, lane, lane.groups[i]);
       const c = m.userData.base.clone().addScaledVector(m.userData.n, -padShape(h.type, h.midi, h.scale).thick / 2);
       if (!WALL_MOUNTED.has(h.type)) world.add(bracket(c.x, c.y, lane.z - 0.02, themeOf(lane).bracket));
       world.add(m);
       pads.push(m);
-    }
+    });
     for (const r of lane.rails) world.add(...railMeshes(r, lane));
     for (const st of lane.stubs) world.add(...stubMeshes(st, lane, pipeMat));
     const marble = new THREE.Mesh(new THREE.SphereGeometry(MARBLE_R, 32, 24), themeOf(lane).marble);
@@ -529,11 +607,18 @@ function buildScene() {
     world.add(marble);
     marbles.push(marble);
   }
+  return { world, pads, marbles, anims };
+}
+
+function showScene(sc) {
+  disposeWorld();
+  ({ world, pads, marbles, anims } = sc);
+  scene.add(world);
 }
 
 // ------------------------------------------------------------------ song loading
-// Planning runs in a worker so the page stays responsive and the spinner can show progress.
-let worker = null, planId = 0;
+// Planning runs in a worker so the page stays responsive and the spinner can show progress. A
+// second worker plans the next song in endless mode while the current one plays.
 function showPlanning(text, frac) {
   $('planning').classList.add('on');
   $('planningText').textContent = text;
@@ -541,34 +626,45 @@ function showPlanning(text, frac) {
 }
 function hidePlanning() { $('planning').classList.remove('on'); }
 
-function planInBackground(parts, options, onProgress) {
-  const id = ++planId;
-  return new Promise((resolve, reject) => {
-    const fallback = () => { // no worker (old browser / file://): plan here instead
-      try { resolve(planCourse(parts, options)); } catch (e) { reject(e); }
-    };
-    if (params.has('shot')) return fallback(); // screenshot mode: plan synchronously (deterministic capture)
-    if (!worker) {
-      try { worker = new Worker(new URL(`./plan-worker.js?v=${window.APP_VERSION || ''}`, import.meta.url), { type: 'module' }); }
-      catch { worker = null; return fallback(); }
-    }
-    const w = worker;
-    w.onmessage = (e) => {
-      if (e.data.id !== id) return; // an older request: ignore
-      if (e.data.progress) return onProgress(e.data.progress);
-      if (e.data.error) return reject(new Error(e.data.error));
-      resolve(rehydratePlan(e.data.plan));
-    };
-    w.onerror = (e) => { e.preventDefault?.(); worker.terminate(); worker = null; fallback(); };
-    w.postMessage({ id, parts, options });
-  });
+function makePlanner() {
+  let worker = null, id = 0;
+  return {
+    busy: false,
+    cancel() { if (worker) { worker.terminate(); worker = null; } id++; this.busy = false; },
+    plan(parts, options, onProgress = () => {}) {
+      const my = ++id;
+      this.busy = true;
+      const done = (f) => (x) => { if (my === id) this.busy = false; f(x); };
+      return new Promise((res, rej) => {
+        const resolve = done(res), reject = done(rej);
+        const fallback = () => { // no worker (old browser / file://): plan here instead
+          try { resolve(planCourse(parts, options)); } catch (e) { reject(e); }
+        };
+        if (params.has('shot')) return fallback(); // screenshot mode: plan synchronously (deterministic capture)
+        if (!worker) {
+          try { worker = new Worker(new URL(`./plan-worker.js?v=${window.APP_VERSION || ''}`, import.meta.url), { type: 'module' }); }
+          catch { worker = null; return fallback(); }
+        }
+        const w = worker;
+        w.onmessage = (e) => {
+          if (e.data.id !== my) return; // an older request: ignore
+          if (e.data.progress) return onProgress(e.data.progress);
+          if (e.data.error) return reject(new Error(e.data.error));
+          resolve(rehydratePlan(e.data.plan));
+        };
+        w.onerror = (e) => { e.preventDefault?.(); w.terminate(); if (worker === w) worker = null; fallback(); };
+        w.postMessage({ id: my, parts, options });
+      });
+    },
+  };
 }
+const mainPlanner = makePlanner(), nextPlanner = makePlanner();
 
-async function loadSong() {
-  const key = $('song').value;
-  const seed = parseInt($('seed').value, 10) || 0;
+/** A song, split between the marbles and given its objects (and, for lofi, its switch blocks). */
+function prepareSong(key, seed) {
   let song;
   if (key === 'proc') song = generateSong(seed);
+  else if (key === 'lofi' || key === 'endless') song = generateLofi(seed);
   else if (key === 'midi' && customMidi) song = customMidi;
   else song = buildSong(key);
   let truncated = false;
@@ -579,61 +675,131 @@ async function loadSong() {
     return { ...p, groups: g.groups };
   });
   // what each marble hits: chosen per marble, or mixed by song section
-  assignObjects(parts, { melody: $('melodyObj').value, harmony: $('harmonyObj').value, drums: $('drumKit').value, seed, bpm: song.bpm || 120, bar: song.bar || 4 });
-  // if a song is already planning, restart the worker so the new request doesn't queue behind it
-  if ($('planning').classList.contains('on') && worker) { worker.terminate(); worker = null; }
-  const myId = planId + 1;
-  showPlanning(`Planning ${song.name.replace(/ —.*/, '')}…`, 0);
+  assignObjects(parts, { melody: $('melodyObj').value, harmony: $('harmonyObj').value, drums: $('drumKit').value,
+    seed, bpm: song.bpm || 120, bar: song.bar || 4, lofi: !!song.lofi });
+  if (song.fx) attachSwitches(parts, song.fx);
+  return { song, parts, split, truncated, seed, key };
+}
+
+/** A planned song as a timeline item: its hits, background beat and switch blocks in loop time. */
+function songItem(prep, plan) {
+  const { song } = prep;
+  const tauOf = (t) => plan.offset + t - plan.g0;
+  const events = plan.lanes.flatMap((l) => l.groups.map((g) => ({ notes: g.notes, role: l.role, obj: g.obj, fx: g.fx, tau: tauOf(g.t) })));
+  events.sort((a, b) => a.tau - b.tau);
+  const fx = events.filter((e) => e.fx).map((e) => ({ tau: e.tau, set: e.fx }));
+  const beat = (song.beat || []).map((n) => ({ ...n, tau: tauOf(n.t) })).filter((n) => n.tau >= 0 && n.tau < plan.D);
+  const title = prep.key === 'endless' ? 'lofi radio ∞' : song.lofi ? song.name.replace(/^.*— /, '') : song.name.replace(/ —.*/, '');
+  return { ...prep, plan, D: plan.D, events, fx, beat, initial: song.initial || {}, lofi: !!song.lofi, title, scene: null, start: 0, reps: Infinity };
+}
+
+const planOptions = (seed) => ({ seed, vMax: parseFloat($('pace').value) || 2.3 });
+
+async function loadSong() {
+  const key = $('song').value;
+  const seed = parseInt($('seed').value, 10) || 0;
+  const prep = prepareSong(key, seed);
+  // a newer request replaces whatever is planning (and any endless prefetch)
+  mainPlanner.cancel();
+  nextPlanner.cancel();
+  const name = prep.song.name.replace(/ —.*/, '');
+  showPlanning(`Planning ${name}…`, 0);
   let newPlan;
   try {
-    newPlan = await planInBackground(parts, { seed, vMax: parseFloat($('pace').value) || 2.3 }, (p) =>
+    newPlan = await mainPlanner.plan(prep.parts, planOptions(seed), (p) =>
       showPlanning(`Planning ${p.name.toLowerCase()} (${p.lane + 1} of ${p.lanes})…`, (p.lane + p.done) / p.lanes));
   } catch (e) {
-    if (myId === planId) { hidePlanning(); $('info').textContent = `Error: ${e.message}`; }
+    if (mainPlanner.busy === false && $('song').value === key) { hidePlanning(); $('info').textContent = `Error: ${e.message}`; }
     throw e;
   }
-  if (myId !== planId) return; // superseded by a newer request
-  plan = newPlan;
-  currentSong = song;
-  // one event per pad hit; the synth splits it into lead / chord / drum voices
-  events = plan.lanes.flatMap((l) => l.groups.map((g) => ({ notes: g.notes, role: l.role, obj: g.obj, tau: plan.offset + g.t - plan.g0 })));
-  events.sort((a, b) => a.tau - b.tau);
-  buildScene();
+  if ($('song').value !== key || (parseInt($('seed').value, 10) || 0) !== seed) return; // superseded
+  items = [songItem(prep, newPlan)];
+  active = null;
   hidePlanning();
+  activate(items[0]);
+  restart();
+}
+
+/** Put an item's course on screen (building it if it wasn't built ahead). */
+function activate(item) {
+  active = item;
+  plan = item.plan;
+  currentSong = item.song;
+  showScene(item.scene || (item.scene = buildScene(item.plan, item.title)));
+  showInfo(item);
+}
+
+function showInfo(item) {
+  const { plan, song, split, truncated } = item;
   const laneInfo = plan.lanes.map((l) => `<span style="color:${themeOf(l).dot}">●</span> ${l.name} ${l.hits.length} (${themeOf(l).name} track)`).join(' &nbsp;');
   const muted = split.muted.length ? `<br><span style="color:#9aa0c0">${split.muted.length} drum notes muted — set Second marble to Percussion to hear them</span>` : '';
-  $('info').innerHTML = `<b style="color:#e8eaf6">${song.name}</b><br>${laneInfo}<br>${plan.D.toFixed(1)}s seamless loop · ${(plan.yMax - plan.yMin).toFixed(0)}m tall wall` + muted +
+  const endless = item.key === 'endless' ? `<br><span style="color:#c9b8ff">Endless lofi · song ${item.seed - (parseInt($('seed').value, 10) || 0) + 1}${nextPlanner.busy ? ' · composing the next one…' : items[items.length - 1] !== item ? ' · next song ready' : ''}</span>` : '';
+  const lofi = item.lofi ? ` · ${song.bpm} bpm · ${item.fx.length} switch blocks` : '';
+  $('info').innerHTML = `<b style="color:#e8eaf6">${song.name}</b><br>${laneInfo}<br>${plan.D.toFixed(1)}s seamless loop${lofi}` + muted + endless +
     (truncated ? '<br><span style="color:#ffb347">Song truncated to fit.</span>' : '');
-  restart();
+}
+
+/** Endless mode: once the last song is under way, compose and plan the next one; it starts at a loop seam. */
+function endlessTick(t) {
+  const last = items[items.length - 1];
+  if (!last || last.key !== 'endless' || nextPlanner.busy || !synth) return;
+  if (last.reps !== Infinity) return; // already has a successor
+  if (t - last.start < 0.4 * last.D) return; // not yet: generate it as this one heads to its end
+  const prep = prepareSong('endless', last.seed + 1);
+  const forItems = items;
+  nextPlanner.plan(prep.parts, planOptions(prep.seed)).then((p) => {
+    if (items !== forItems) return; // the user loaded something else meanwhile
+    const next = songItem(prep, p);
+    next.scene = buildScene(next.plan, next.title);
+    const now = synth.ctx.currentTime - startTime;
+    appendItem(items, next, Math.max(now + 0.5, last.start + last.D * 0.999));
+    showInfo(active);
+  }).catch((e) => { if (items === forItems) console.warn('next song failed to plan', e); });
+  showInfo(active);
 }
 
 function restart() {
   if (!synth) return;
   startTime = synth.ctx.currentTime + 0.1; // the loop starts at the seam
   schedAbs = synth.ctx.currentTime - startTime;
+  for (const it of items) it.start = it === items[0] ? 0 : it.start; // (only ever called with one item)
+}
+
+/** The lofi master effects at a moment: the item's switch settings (if switch effects are on). */
+function applyFx(set, at, item) {
+  const fxOn = $('lofiFx').checked;
+  if ('filter' in set) synth.setFilter(fxOn && !!set.filter, at);
+  if ('crackle' in set) synth.setCrackle(fxOn && !!set.crackle, at);
 }
 
 function pumpAudio() {
   const now = synth.ctx.currentTime - startTime;
   const until = now + 0.25;
   const from = Math.max(schedAbs, now);
-  for (let li = Math.floor(from / plan.D); li * plan.D < until; li++)
-    for (const e of events) {
-      const a = li * plan.D + e.tau;
-      if (a >= from && a < until) synth.playHit(e.notes, startTime + a, e.role, synth.font, e.obj);
+  for (const ev of collect(items, from, until)) {
+    const at = startTime + ev.at;
+    if (ev.kind === 'hit') synth.playHit(ev.event.notes, at, ev.event.role, ev.event.obj);
+    else if (ev.kind === 'beat') synth.playBeat(ev.note, at);
+    else if (ev.kind === 'fx') applyFx(ev.set, at, ev.item);
+    else if (ev.kind === 'start') { // each time round: the song's own starting state
+      synth.setLofi(ev.item.lofi, at);
+      applyFx({ filter: false, crackle: false, ...ev.item.initial }, at, ev.item);
     }
+  }
   schedAbs = until;
 }
 
-// ?t=12.5 freezes the preview at that loop time (handy for screenshots); ?cam=, ?song=, ?seed=
+// ?t=12.5 freezes the preview at that loop time (handy for screenshots); ?cam=, ?song=, ?seed=, ...
 const params = new URLSearchParams(location.search);
-for (const k of ['cam', 'song', 'seed', 'second', 'font', 'pace', 'theme', 'melodyObj', 'harmonyObj', 'drumKit']) if (params.get(k)) $(k).value = params.get(k);
+for (const k of ['cam', 'song', 'seed', 'second', 'pace', 'theme', 'melodyObj', 'harmonyObj', 'drumKit', 'zoom', 'bright', 'glow', 'deco']) if (params.get(k)) $(k).value = params.get(k);
 if (params.has('shot')) for (const id of ['start', 'panel', 'toggle']) $(id).style.display = 'none';
+if (['lofi', 'endless'].includes($('song').value) && !params.get('theme')) $('theme').value = 'lofi';
 
-function currentTau() {
-  if (!synth) return params.has('t') ? Math.min(parseFloat(params.get('t')), plan.D - 1e-6) : 0;
+/** Where the timeline is now: { item, tau } (or the frozen ?t= time before audio starts). */
+function now() {
+  if (!synth) return { item: items[0], tau: params.has('t') ? Math.min(parseFloat(params.get('t')), items[0].D - 1e-6) : 0, t: 0 };
   const t = synth.ctx.currentTime - startTime - synth.latency;
-  return ((t % plan.D) + plan.D) % plan.D;
+  return { ...itemAt(items, Math.max(0, t)), t };
 }
 
 // ------------------------------------------------------------------ animation
@@ -643,9 +809,18 @@ function frame() {
   requestAnimationFrame(frame);
   const nowMs = performance.now();
   lastFrame = nowMs;
-  if (!plan || !marbles.length) return;
+  if (!items.length || !marbles.length) return;
   if (playing) pumpAudio();
-  const tau = currentTau();
+  const cur = now();
+  if (cur.item !== active) { // endless: the next song starts at the seam
+    activate(cur.item);
+    items = items.filter((it) => it.start + it.reps * it.D > cur.t - 1); // forget songs that have finished
+  }
+  endlessTick(cur.t);
+  const tau = cur.tau;
+  // the switch blocks' state right now: a muffled picture while the filter is closed
+  const st = settingsAt(active, tau);
+  renderer.domElement.classList.toggle('muffled', !!st.filter && $('lofiFx').checked);
   const dTau = tau - lastTau;
   lastTau = tau;
 
@@ -688,6 +863,14 @@ function frame() {
       const w = on ? 0.12 * Math.exp(-dh * 2.5) * Math.sin(dh * 12) : 0;
       p.quaternion.copy(u.baseQ).premultiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), w));
     }
+    if (u.vinyl) { // the record turns (and gets a spin when hit)
+      u.vinyl.disc.rotation.y = -tau * 3.4 - (dh >= 0 ? 2.5 * (1 - Math.exp(-dh * 3)) : 0);
+    }
+    if (u.switch) { // the lever is thrown when the marble hits it; the lamp shows the new state
+      const k = dh < 0 ? 0 : Math.min(1, dh / 0.12);
+      u.switch.lever.rotation.z = 0.55 * (1 - 2 * k * k * (3 - 2 * k));
+      u.switch.lampMat.emissiveIntensity = dh >= 0 ? 0.4 + 2.5 * Math.exp(-dh * 4) : 0.06;
+    }
     if (u.tube) { // the struck tube wobbles a little
       const w = on ? 0.07 * Math.exp(-dh * 3) * Math.sin(dh * 22) : 0;
       p.quaternion.copy(u.baseQ).premultiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), w));
@@ -700,7 +883,7 @@ function frame() {
   // camera: a pure function of loop time (see camera.js), so the loop's ends match exactly
   const mode = $('cam').value;
   controls.enabled = mode === 'free';
-  const pose = cameraPose(plan, tau, camera.aspect);
+  const pose = cameraPose(plan, tau, camera.aspect, { zoom: parseFloat($('zoom').value) });
   if (mode === 'follow') {
     const { position: p, lookAt: l } = cameraPlacement(pose);
     camera.position.set(p.x, p.y, p.z);
@@ -723,7 +906,7 @@ function frame() {
 $('start').addEventListener('click', async () => {
   $('start').remove();
   synth = new Synth();
-  synth.font = $('font').value;
+  applySettings();
   await synth.ctx.resume();
   playing = true;
   restart();
@@ -735,8 +918,18 @@ $('dice').addEventListener('click', () => {
   if ($('song').value === 'midi') $('song').value = 'proc';
   loadSong();
 });
-$('font').addEventListener('change', () => synth && (synth.font = $('font').value));
-$('theme').addEventListener('change', () => { applyTheme(); if (plan) buildScene(); });
+$('song').addEventListener('change', () => { // lofi songs start in the cozy theme (change it after if you like)
+  if (['lofi', 'endless'].includes($('song').value) && $('theme').value !== 'lofi') { $('theme').value = 'lofi'; applyTheme(); }
+});
+const rebuild = () => { if (!active) return; for (const it of items) it.scene = null; activate(active); };
+$('theme').addEventListener('change', () => { applyTheme(); rebuild(); });
+$('deco').addEventListener('change', rebuild);
+for (const id of ['bright', 'glow', 'volume', 'zoom']) $(id).addEventListener('input', applySettings);
+$('lofiFx').addEventListener('change', () => { // apply now, not at the next switch block
+  if (!synth || !active) return;
+  const s = settingsAt(active, now().tau);
+  applyFx({ filter: !!s.filter, crackle: !!s.crackle }, synth.ctx.currentTime, active);
+});
 $('second').addEventListener('change', loadSong);
 $('pace').addEventListener('change', loadSong);
 $('melodyObj').addEventListener('change', loadSong);

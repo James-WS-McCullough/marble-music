@@ -143,3 +143,33 @@ test('a tune with little repetition gets longer sections (rare changes)', () => 
   assert.ok(sec.len >= 8 * song.bar * 60 / song.bpm - 1e-9, 'eight-bar sections');
   assert.ok(sec.labels.length <= 4);
 });
+
+test('lofi: deterministic, slow, jazzy chords on the second marble, a beat track and switch blocks', async () => {
+  const { generateLofi, attachSwitches } = await import('../src/music.js');
+  const a = generateLofi(5), b = generateLofi(5), c = generateLofi(6);
+  assert.deepEqual(a, b);
+  assert.notDeepEqual(a.notes, c.notes);
+  for (const seed of [1, 2, 3, 4, 5, 9, 77]) {
+    const s = generateLofi(seed);
+    assert.ok(s.lofi && s.bpm >= 70 && s.bpm <= 88, `bpm ${s.bpm}`);
+    assert.ok(s.notes.every((n) => n.dur > 0 && n.midi > 20 && n.midi < 100 && n.ch !== 9), 'pitched only (the beat is separate)');
+    const chords = groupNotes(s.notes.filter((n) => n.ch === 1)).groups.filter((g) => g.notes.length >= 4);
+    assert.ok(chords.length >= 16, 'a 7th/9th chord every bar');
+    assert.ok(s.beat.length > 100 && s.beat.every((n) => n.ch === 9));
+    // the switch blocks: the beat comes in and goes out, the filter dips; the end matches the start
+    let st = { ...s.initial };
+    for (const f of s.fx) Object.assign(st, f.set);
+    assert.equal(st.beat, s.initial.beat, 'ends as it starts (seamless loop)');
+    assert.equal(st.filter, s.initial.filter);
+    assert.ok(s.fx.some((f) => f.set.beat === true) && s.fx.some((f) => f.set.filter === false));
+    // switches go on the melody marble, on a note if one is there or as a note-less hit
+    const parts = splitParts(s.notes, { second: 'harmony' }).parts.map((p) => ({ ...p, groups: groupNotes(p.notes).groups }));
+    assignObjects(parts, { seed, bpm: s.bpm, bar: s.bar, lofi: true });
+    attachSwitches(parts, s.fx);
+    const sw = parts[0].groups.filter((g) => g.obj === 'switch');
+    assert.equal(sw.length, s.fx.length);
+    assert.ok(parts[0].groups.every((g, i, arr) => i === 0 || g.t >= arr[i - 1].t), 'still in time order');
+    assert.ok(parts[0].groups.filter((g) => g.obj !== 'switch').some((g) => g.obj === 'epiano'), 'the lofi mix leads on e-piano');
+    assert.ok(parts[1].groups.every((g) => g.obj === 'vinyl'), 'chords and bass on the records');
+  }
+});

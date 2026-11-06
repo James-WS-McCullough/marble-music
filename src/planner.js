@@ -48,6 +48,7 @@ export const DEFAULTS = {
   shelfMin: 0.5, // a lane lagging below the others may use short track pieces for gaps >= this
   rampSlope: (7 * Math.PI) / 180,
   topSlope: (5 * Math.PI) / 180,
+  seamSlope: (9 * Math.PI) / 180, // start rails, end gutters and the seam's pipe stubs
   gutterSlope: (6 * Math.PI) / 180,
   rampDrag: 0.7, // v^2 drag on ramps -> terminal speed ~1.1 m/s
   switchR: 0.14, // radius of switchback U-bends
@@ -119,6 +120,8 @@ function padShapeFull(type, midi) {
     case 'bell': return { len: 0.2, thick: 0.11 }; // a handbell on its side, struck on the flank
     case 'woodblock': return { len: 0.17, thick: 0.06 };
     case 'cowbell': return { len: 0.13, thick: 0.085 };
+    case 'vinyl': return { len: 0.24, thick: 0.035 }; // a record on its platter
+    case 'switch': return { len: 0.15, thick: 0.065 }; // a lever switch block
     default: return { len: clamp(0.32 - (midi - 48) * 0.004, 0.16, 0.32), thick: 0.05 };
   }
 }
@@ -551,8 +554,10 @@ export function planCourse(parts, options = {}) {
   // The loop seam: each marble rolls out of a short pipe stub at its start and into an identical
   // stub at its end. The first marble's two stubs sit in identical, reserved "seam frames" (same
   // rails in and out, nothing else), so the last frame of the video matches the first exactly.
-  const SEAM = { w: 4.8, h: 3.4, stubLen: 0.36, rail: 3.2, margin: 0.35, shadow: 0.8, launch: 0.09 };
-  const slopeT = opt.topSlope;
+  // (kept small and quick: the camera follows the marble out of / into the stubs, and only the
+  // very first and last frames are the fixed seam shot)
+  const SEAM = { w: 3.4, h: 2.6, stubLen: 0.36, rail: 1.9, margin: 0.3, shadow: 0.6, launch: 0.06 };
+  const slopeT = opt.seamSlope;
 
   // x bounces between -A and A (a triangle wave), y descends; starts near the lift heading left
   const tri = (u) => { const m = (((u + A) % (4 * A)) + 4 * A) % (4 * A); return m < 2 * A ? m - A : 3 * A - m; };
@@ -622,7 +627,8 @@ export function planCourse(parts, options = {}) {
     const path = new Path({ x: sx, y }, Math.PI + slopeT);
     path.line(L);
     const roll = rollRail(path, 0.3, { drag: opt.rampDrag });
-    const tDrop = 0.18;
+    // (the first marble drops a little further, so its first pad lands clear of the seam sign)
+    const tDrop = lane.k === 0 ? 0.32 : 0.18;
     return { path, roll, tDrop, P0: flightPos(roll.end, roll.v, tDrop), vin0: flightVel(roll.v, tDrop), time: roll.duration + tDrop,
       stub: { x: sx, y, angle: Math.PI + slopeT } };
   };
@@ -1050,6 +1056,8 @@ export function planCourse(parts, options = {}) {
             for (const phi of RAMP_DROPS) { // 0: flies exactly along the ramp (tubes); > 0: drops onto a rail
               const { t1, vh } = kv;
               if (room(d0, P.x) < 0.25 + vh * t1) continue;
+              // the cheapest this ramp could possibly cost: not worth simulating if that's no better
+              if (0.6 + (d0 !== dir0 ? 0.5 : 0) + opt.exitTime + (kv === opt.kicks[0] ? 0 : 0.2) >= worst()) continue;
               const kick = { x: d0 * vh, y: G * t1 - vh * Math.tan(slope + phi) };
               const kn = { x: kick.x - vin.x, y: kick.y - vin.y }, knl = Math.hypot(kn.x, kn.y);
               // a real hit: head-on, and leaving away from the pad
@@ -1077,6 +1085,29 @@ export function planCourse(parts, options = {}) {
               if (phi && !hop) continue;
               const hopT = hop ? hop.duration : 0;
               const raw = rollRaw(rp, hop ? hop.v : vh / Math.cos(slope), { drag: opt.rampDrag, budget: dt - t1 - opt.exitTime - hopT, extend, s0: hop ? hop.s : 0 });
+              // Every drop-off time's roll is a prefix of this one, so the clearance checks below
+              // are scanned once per ramp (incrementally, as far as needed) instead of per cut.
+              const hopN = hop ? hop.xs.length : 0;
+              const trackScan = new Map(); // sTube -> { next sample to check, first clipping one }
+              const trackClips = (sTube, tube, len) => {
+                let m = trackScan.get(sTube);
+                if (!m) trackScan.set(sTube, (m = { j: 0, clip: Infinity }));
+                for (; m.j < len && m.clip === Infinity; m.j += 6) {
+                  const j = m.j, q = j < hopN ? { x: hop.xs[j], y: hop.ys[j] } : { x: raw.xs[j - hopN], y: raw.ys[j - hopN] };
+                  // is this sample inside the tube part? (raw samples follow the hops)
+                  const inTube = tube && (sTube === 0 || (j >= hopN && raw.ss[j - hopN] >= sTube));
+                  if (solidHit(w, rel, q, P, inTube ? TUBE_R - MARBLE_R + 0.008 : 0.01) || distSeg(q.x, q.y, kickPad) < (inTube ? TUBE_R : MARBLE_R) + kickPad.r + 0.004) m.clip = j;
+                }
+                return m.clip < len;
+              };
+              const RAIL = 0.012, railScan = { s: 0, clip: Infinity };
+              const railClips = (railEnd) => { // the open rail part (sticks out under the marble)
+                for (; railScan.s <= railEnd + 1e-12 && railScan.clip === Infinity; railScan.s += 0.025) {
+                  const q = rp.at(railScan.s), x = q.x + q.nx * MARBLE_R, y = q.y + q.ny * MARBLE_R;
+                  if (distSeg(x, y, kickPad) < RAIL + kickPad.r + 0.004 || w.some(x, y, 0.15, (o) => !o.path && rel(o) && distSeg(x, y, o) < RAIL + o.r + 0.004)) railScan.clip = railScan.s;
+                }
+                return railScan.clip <= railEnd + 1e-12;
+              };
               for (let tE = opt.exitTime; tE <= tEmax + 1e-9; tE += 0.04) {
                 const r = cutRoll(rp, raw, dt - t1 - tE - hopT, hop);
                 if (!r) continue;
@@ -1104,21 +1135,8 @@ export function planCourse(parts, options = {}) {
                 if (cost >= worst()) continue;
                 // the track (a tube is fatter than the marble; an open rail sticks out under it) and
                 // the drop off its end must clear everything
-                let clips = false;
-                const hopN = hop ? hop.xs.length : 0;
-                for (let j = 0; j < r.xs.length && !clips; j += 6) {
-                  const q = { x: r.xs[j], y: r.ys[j] };
-                  // is this sample inside the tube part? (raw samples follow the hops)
-                  const inTube = tube && (sTube === 0 || (j >= hopN && raw.ss[j - hopN] >= sTube));
-                  if (solidHit(w, rel, q, P, inTube ? TUBE_R - MARBLE_R + 0.008 : 0.01) || distSeg(q.x, q.y, kickPad) < (inTube ? TUBE_R : MARBLE_R) + kickPad.r + 0.004) clips = true;
-                }
-                if (!clips && sTube !== 0) { // the open rail part (sticks out under the marble)
-                  const RAIL = 0.012, railEnd = tube ? sTube : r.sEnd;
-                  for (let s2 = 0; s2 <= railEnd && !clips; s2 += 0.025) {
-                    const q = rp.at(s2), x = q.x + q.nx * MARBLE_R, y = q.y + q.ny * MARBLE_R;
-                    if (distSeg(x, y, kickPad) < RAIL + kickPad.r + 0.004 || w.some(x, y, 0.15, (o) => !o.path && rel(o) && distSeg(x, y, o) < RAIL + o.r + 0.004)) clips = true;
-                  }
-                }
+                let clips = trackClips(sTube, tube, r.xs.length);
+                if (!clips && sTube !== 0) clips = railClips(tube ? sTube : r.sEnd);
                 if (!clips && !flightClear(sampleFlight(r.end, r.v, tEx))) clips = true;
                 if (!clips && onOldPath(w, k, Q.x, Q.y, i)) clips = true;
                 if (clips) { if (!soft) continue; cost += 100; pen = 100; }
@@ -1141,7 +1159,7 @@ export function planCourse(parts, options = {}) {
       const out = [];
       // (the first marble's gutter may be longer, so its end seam frame can sit out of the way of
       // the lanes behind)
-      for (const Lg of k === 0 ? [SEAM.rail + 0.4, SEAM.rail + 1.8, SEAM.rail + 3.3].map((L) => SEAM.stubLen / 2 + L) : [SEAM.stubLen / 2 + 1.2])
+      for (const Lg of k === 0 ? [SEAM.rail + 0.3, SEAM.rail + 1.2, SEAM.rail + 2.4].map((L) => SEAM.stubLen / 2 + L) : [SEAM.stubLen / 2 + 0.7])
       for (const yDrop of [0, 0.25, 0.5, 0.8, 1.2, 1.7, 2.3]) {
         const yG = yMin - 0.7 - yDrop;
         for (const vy0 of [1.0, 1.6, 0.5, 2.2, 0.0, 0.25, -0.3])
@@ -1228,7 +1246,7 @@ export function planCourse(parts, options = {}) {
   // The loop ends just after the first marble disappears into its end stub (the same moment
   // before it appears from its start stub). Every other marble is tucked into its own end stub
   // well before that, so the seam frame is identical at both ends.
-  const D = Math.max(lanes[0].arrive, ...lanes.slice(1).map((l) => l.arrive + 1.6)) + SEAM.launch;
+  const D = Math.max(lanes[0].arrive, ...lanes.slice(1).map((l) => l.arrive + 0.2)) + SEAM.launch;
   for (const lane of lanes) {
     lane.segs.push({ type: 'hidden', t0: lane.arrive, t1: D, p: lane.base });
     lane.segs.sort((a, b) => a.t0 - b.t0);

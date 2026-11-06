@@ -246,22 +246,23 @@ const spooky = {
 // ------------------------------------------------------------------ lab (clean white test lab)
 const lab = {
   id: 'lab', name: 'Lab',
-  background: 0xd9dee3, exposure: 1.0, env: 0.6,
-  hemi: [0xffffff, 0xc3ccd6, 1.0], sun: [0xffffff, 1.6],
-  pipe: 0xb9c0c8,
-  wall: () => ({ color: 0xffffff, roughness: 0.6, map: canvasTexture(256, 256, (g) => {
-    // 2 x 2 white panels per 1.5 m, with seams and screws
-    g.fillStyle = '#9aa3ad'; g.fillRect(0, 0, 256, 256);
+  // (cool grey panels with dark seams, not pure white: white walls and bloom washed everything out)
+  background: 0x262c33, exposure: 0.82, env: 0.4,
+  hemi: [0xf2f6ff, 0x59636e, 0.7], sun: [0xffffff, 2.1],
+  pipe: 0x8d96a0,
+  wall: () => ({ color: 0xffffff, roughness: 0.55, map: canvasTexture(256, 256, (g) => {
+    // 2 x 2 panels per 1.5 m, with dark seams and screws
+    g.fillStyle = '#4b535c'; g.fillRect(0, 0, 256, 256);
     for (const [x, y] of [[0, 0], [128, 0], [0, 128], [128, 128]]) {
       const grad = g.createLinearGradient(x, y, x + 128, y + 128);
-      grad.addColorStop(0, '#f4f6f8'); grad.addColorStop(1, '#e3e7eb');
+      grad.addColorStop(0, '#c9d0d7'); grad.addColorStop(1, '#aeb6bf');
       g.fillStyle = grad; g.fillRect(x + 2, y + 2, 124, 124);
-      g.fillStyle = '#b3bac2';
+      g.fillStyle = '#7d8690';
       for (const [sx, sy] of [[8, 8], [118, 8], [8, 118], [118, 118]]) { g.beginPath(); g.arc(x + sx, y + sy, 2.2, 0, Math.PI * 2); g.fill(); }
     }
   }) }),
   sign: (w, h, title) => signMesh(w, h, (g, W, H) => {
-    g.fillStyle = '#f5f7f9'; g.fillRect(0, 0, W, H);
+    g.fillStyle = '#e6eaee'; g.fillRect(0, 0, W, H);
     const stripes = (y0, hh) => {
       g.save(); g.beginPath(); g.rect(0, y0, W, hh); g.clip();
       g.fillStyle = '#1f2328'; g.fillRect(0, y0, W, hh);
@@ -295,7 +296,7 @@ const lab = {
       if (r < 0.3) { // light panel
         const at = place(0.4);
         if (!at) continue;
-        const m = new THREE.Mesh(new THREE.BoxGeometry(0.62, 0.16, 0.025), std({ color: 0xffffff, emissive: 0xdff2ff, emissiveIntensity: 0.9 }));
+        const m = new THREE.Mesh(new THREE.BoxGeometry(0.62, 0.16, 0.025), std({ color: 0xdfe8f0, emissive: 0xcfeaff, emissiveIntensity: 0.55 }));
         m.position.set(at.x, at.y, 0.013);
         add(m);
       } else if (r < 0.45) { // hazard plate
@@ -339,4 +340,110 @@ const lab = {
   },
 };
 
-export const THEMES = { sky, spooky, lab };
+// ------------------------------------------------------------------ lofi (a cozy bedroom at night)
+const lofi = {
+  id: 'lofi', name: 'Lofi bedroom',
+  background: 0x1c1830, exposure: 0.85, env: 0.35,
+  hemi: [0xffd9b0, 0x3a2f5a, 0.7], sun: [0xffc58a, 1.7],
+  pipe: 0xc98a5a,
+  wall: () => ({ color: 0xffffff, roughness: 0.9, map: canvasTexture(256, 256, (g) => {
+    // dusky rose wallpaper: soft vertical stripes and a tiny sprig pattern
+    g.fillStyle = '#8e6a7e'; g.fillRect(0, 0, 256, 256);
+    for (let x = 0; x < 256; x += 32) { g.fillStyle = 'rgba(255,225,200,0.07)'; g.fillRect(x, 0, 14, 256); }
+    const rng = mulberry32(11);
+    g.fillStyle = 'rgba(255,230,205,0.18)';
+    for (let i = 0; i < 16; i++) { const x = (i % 4) * 64 + 24, y = Math.floor(i / 4) * 64 + 20 + (i % 2) * 32; g.beginPath(); g.arc(x, y, 3, 0, Math.PI * 2); g.fill(); g.fillRect(x - 0.5, y, 1, 9); }
+    for (let i = 0; i < 2500; i++) { g.fillStyle = `rgba(0,0,0,${rng() * 0.04})`; g.fillRect(rng() * 256, rng() * 256, 2, 2); }
+  }) }),
+  // a cassette tape label: the song's title handwritten across it
+  sign: (w, h, title) => signMesh(w, h, (g, W, H) => {
+    g.fillStyle = '#2b2236'; g.fillRect(0, 0, W, H);
+    g.fillStyle = '#efe2c8'; roundRect(g, 26, 26, W - 52, H - 52, 34); g.fill();
+    g.fillStyle = '#e07a5f'; g.fillRect(26, H * 0.17, W - 52, 26);
+    g.fillStyle = '#f2cc8f'; g.fillRect(26, H * 0.17 + 26, W - 52, 14);
+    g.fillStyle = '#3d2f45'; g.textAlign = 'center'; g.textBaseline = 'middle';
+    fitText(g, title, W * 0.6, 58, 'italic 600', 'Georgia, serif');
+    g.fillText(title, W / 2, H * 0.32);
+    g.font = '600 22px system-ui, sans-serif'; g.fillStyle = '#8a7a8e';
+    g.fillText('SIDE A  ·  ♪', W / 2, H * 0.39);
+  }),
+  decorate(ctx) {
+    const { rng, area, place, free, mark, add } = ctx;
+    const anim = [];
+    const frameMat = std({ color: 0x5a3d2b, roughness: 0.6 });
+    const scenes = ['#f4a261', '#2a9d8f', '#e76f51', '#9d8df1', '#e9c46a'];
+    for (let i = 0; i < area / 9; i++) { // little framed pictures: a sunset hill, a moon
+      const sw = 0.24 + rng() * 0.16, sh = sw * (0.75 + rng() * 0.4), at = place(Math.max(sw, sh) * 0.7);
+      if (!at) continue;
+      const a = scenes[Math.floor(rng() * scenes.length)], moon = rng() < 0.4;
+      const tex = canvasTexture(128, 128, (g) => {
+        const sky = g.createLinearGradient(0, 0, 0, 128);
+        sky.addColorStop(0, moon ? '#1d2245' : a); sky.addColorStop(1, moon ? '#4a3f74' : '#f6d6ad');
+        g.fillStyle = sky; g.fillRect(0, 0, 128, 128);
+        g.fillStyle = moon ? '#f6efd2' : '#fff3d6'; g.beginPath(); g.arc(moon ? 88 : 64, moon ? 34 : 78, moon ? 14 : 22, 0, Math.PI * 2); g.fill();
+        g.fillStyle = moon ? '#252040' : '#6b4f6e'; g.beginPath(); g.moveTo(0, 128); g.quadraticCurveTo(40, 70, 128, 96); g.lineTo(128, 128); g.fill();
+      }, false);
+      const f = new THREE.Mesh(new THREE.BoxGeometry(sw + 0.04, sh + 0.04, 0.02), frameMat);
+      const pic = new THREE.Mesh(new THREE.PlaneGeometry(sw, sh), std({ map: tex, roughness: 0.7 }));
+      pic.position.z = 0.0105;
+      f.add(pic);
+      f.position.set(at.x, at.y, 0.012);
+      f.rotation.z = (rng() - 0.5) * 0.08;
+      f.castShadow = true;
+      add(f);
+    }
+    // strings of warm fairy lights, twinkling gently with the beat
+    const bulbGeo = new THREE.SphereGeometry(0.018, 10, 8), wireMat = std({ color: 0x2a2a2a, roughness: 0.8 });
+    for (let i = 0; i < area / 14; i++) {
+      const L = 0.9 + rng() * 0.9, sag = 0.12 + rng() * 0.1;
+      for (let k = 0; k < 40; k++) {
+        const at = place(0.15, 1);
+        if (!at) continue;
+        const pts = Array.from({ length: 12 }, (_, j) => { const u = j / 11; return { x: at.x - L / 2 + u * L, y: at.y - sag * 4 * u * (1 - u) }; });
+        if (!pts.every((q) => free(q.x, q.y, 0.12))) continue;
+        pts.forEach((q) => mark(q.x, q.y, 0.3));
+        const curve = new THREE.CatmullRomCurve3(pts.map((q) => new THREE.Vector3(q.x, q.y, 0.02)));
+        add(new THREE.Mesh(new THREE.TubeGeometry(curve, 24, 0.003, 4), wireMat));
+        pts.forEach((q, j) => {
+          if (j === 0 || j === 11) return;
+          const col = [0xffc070, 0xffe0a0, 0xff9a7a][j % 3];
+          const mat = std({ color: col, emissive: col, emissiveIntensity: 1.2 });
+          const b = new THREE.Mesh(bulbGeo, mat);
+          b.position.set(q.x, q.y - 0.02, 0.03);
+          add(b);
+          const ph = rng() * 8;
+          anim.push((tau, beat) => { mat.emissiveIntensity = 0.8 + 0.6 * (0.5 + 0.5 * Math.sin((beat + ph) * Math.PI * 0.5)); });
+        });
+        break;
+      }
+    }
+    // potted plants on little shelves
+    const potMat = std({ color: 0xc8735a, roughness: 0.8 }), shelfMat = std({ color: 0x7a5236, roughness: 0.6 });
+    const leafMat = std({ color: 0x5f9e6e, roughness: 0.7, side: THREE.DoubleSide });
+    for (let i = 0; i < area / 12; i++) {
+      const at = place(0.28);
+      if (!at) continue;
+      const g = new THREE.Group();
+      const shelf = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.025, 0.12), shelfMat);
+      const pot = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.045, 0.1, 16), potMat);
+      pot.position.set(0, 0.062, 0.05);
+      g.add(shelf, pot);
+      for (let k = 0; k < 6; k++) {
+        const leaf = new THREE.Mesh(new THREE.SphereGeometry(0.05, 8, 6), leafMat);
+        leaf.scale.set(0.45, 1.3, 0.25);
+        const a = (k / 5 - 0.5) * 1.6;
+        leaf.position.set(Math.sin(a) * 0.05, 0.16 + Math.cos(a) * 0.03, 0.05);
+        leaf.rotation.z = -a * 0.9;
+        g.add(leaf);
+      }
+      g.position.set(at.x, at.y - 0.08, 0.06);
+      g.traverse((o) => { o.castShadow = true; });
+      add(g);
+      const ph = rng() * Math.PI * 2;
+      anim.push((tau) => { g.rotation.z = 0.015 * Math.sin(tau * 0.8 + ph); });
+    }
+    return anim;
+  },
+};
+
+export const THEMES = { sky, spooky, lab, lofi };

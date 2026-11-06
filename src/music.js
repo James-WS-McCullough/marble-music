@@ -304,8 +304,8 @@ export function splitParts(notes, { second = 'auto' } = {}) {
 // boundaries, together in both marbles. The bass always stays on bars, drums stay drums.
 // Sets g.obj on each group; deterministic for a seed.
 /** Choices for the melody marble and for the second marble's harmony/bass ('mix' = by section). */
-export const MELODY_OBJECTS = ['mix', 'key', 'button', 'tube', 'bamboo', 'bottle', 'neon', 'bell'];
-export const HARMONY_OBJECTS = ['mix', 'bar', 'button', 'tube', 'bamboo', 'bottle', 'neon', 'bell'];
+export const MELODY_OBJECTS = ['mix', 'key', 'epiano', 'button', 'tube', 'bamboo', 'bottle', 'neon', 'bell'];
+export const HARMONY_OBJECTS = ['mix', 'bar', 'vinyl', 'epiano', 'button', 'tube', 'bamboo', 'bottle', 'neon', 'bell'];
 /** The drum marble: the standard kit, woodblocks & cowbells, or both by song section. */
 export const DRUM_KITS = ['kit', 'blocks', 'mix'];
 
@@ -352,7 +352,7 @@ export function songSections(parts, { bpm = 120, bar = 4 } = {}) {
  * entry (for the second marble when it plays harmony or bass). An explicit choice is used for
  * every hit (even a bass line); 'mix' follows the song's sections (bass stays on bars).
  */
-export function assignObjects(parts, { melody = 'mix', harmony = 'mix', drums = 'kit', seed = 1, bpm = 120, bar = 4 } = {}) {
+export function assignObjects(parts, { melody = 'mix', harmony = 'mix', drums = 'kit', seed = 1, bpm = 120, bar = 4, lofi = false } = {}) {
   const rng = mulberry32((seed >>> 0) ^ 0x9e3779b9);
   const sections = melody === 'mix' || harmony === 'mix' || drums === 'mix' ? songSections(parts, { bpm, bar }) : null;
   const beat = 60 / bpm;
@@ -362,15 +362,132 @@ export function assignObjects(parts, { melody = 'mix', harmony = 'mix', drums = 
       for (const g of p.groups) g.obj = drums === 'mix' ? (sections.labels[sectionOf(g.t)] % 2 ? 'blocks' : 'kit') : drums;
       continue;
     }
-    const lead = p.role === 'lead', base = lead ? 'key' : 'bar';
+    const lead = p.role === 'lead', base = lofi ? (lead ? 'epiano' : 'vinyl') : lead ? 'key' : 'bar';
     const choice = lead ? melody : harmony;
     if (choice !== 'mix') { for (const g of p.groups) g.obj = choice; continue; }
-    if (p.role === 'bass') { for (const g of p.groups) g.obj = 'bar'; continue; }
+    if (p.role === 'bass' || (lofi && !lead)) { for (const g of p.groups) g.obj = lofi ? 'vinyl' : 'bar'; continue; }
     // the first tune keeps the classic instrument; each new tune gets the next one (order by seed)
-    const others = lead ? ['button', 'tube', 'bamboo', 'bottle', 'neon', 'bell'] : ['tube', 'bamboo', 'button', 'bottle', 'neon', 'bell'];
+    // (lofi keeps to the mellow ones: e-piano, bamboo, bottles, bells)
+    const others = lofi ? ['bamboo', 'bottle', 'bell'] : lead ? ['button', 'tube', 'bamboo', 'bottle', 'neon', 'bell'] : ['tube', 'bamboo', 'button', 'bottle', 'neon', 'bell'];
     for (let i = others.length - 1; i > 0; i--) { const j = Math.floor(rng() * (i + 1)); [others[i], others[j]] = [others[j], others[i]]; }
     const order = [base, ...others];
     for (const g of p.groups) g.obj = order[sections.labels[sectionOf(g.t)] % order.length];
   }
   return parts;
 }
+
+// ---------------------------------------------------------------------------------------------
+// Lofi: jazzy 7th/9th chord progressions, a laid-back pentatonic melody that repeats every two
+// bars, a swung boom-bap beat (a background track, not on a marble) and a structure of switch
+// blocks: a muffled intro with vinyl crackle, the beat and full sound dropping in, a filter dip,
+// and an outro. Deterministic per seed.
+const LOFI_PROGRESSIONS = [
+  { name: 'ii-V-I-vi', minor: false, chords: [[2, 'm9'], [5, '9'], [1, 'maj9'], [6, 'm7']] },
+  { name: 'I-vi-ii-V', minor: false, chords: [[1, 'maj7'], [6, 'm9'], [2, 'm7'], [5, '7']] },
+  { name: 'IV-iii-ii-I', minor: false, chords: [[4, 'maj7'], [3, 'm7'], [2, 'm9'], [1, 'maj9']] },
+  { name: 'i-iv-VII-III', minor: true, chords: [[1, 'm9'], [4, 'm7'], [7, '9'], [3, 'maj7']] },
+  { name: 'i-VI-iv-v', minor: true, chords: [[1, 'm7'], [6, 'maj7'], [4, 'm9'], [5, 'm7']] },
+];
+const CHORD_SHAPES = { maj7: [0, 4, 7, 11], maj9: [0, 4, 7, 11, 14], m7: [0, 3, 7, 10], m9: [0, 3, 7, 10, 14], 7: [0, 4, 7, 10], 9: [0, 4, 7, 10, 14] };
+const MAJOR = [0, 2, 4, 5, 7, 9, 11], NAT_MINOR = [0, 2, 3, 5, 7, 8, 10];
+const LOFI_TITLES = ['rainy window', 'late night study', 'coffee & clouds', 'sleepy tram', 'paper lanterns', 'city lights',
+  'quiet afternoon', 'warm tape', 'moonlit desk', 'slow sunday', 'snowfall', 'lost cassette', 'night bus', 'old polaroids'];
+
+export function generateLofi(seed) {
+  const rng = mulberry32((seed >>> 0) ^ 0x10f1);
+  const pick = (a) => a[Math.floor(rng() * a.length)];
+  const bpm = Math.round(70 + rng() * 18), beat = 60 / bpm, bar = 4, barLen = bar * beat;
+  const prog = pick(LOFI_PROGRESSIONS);
+  const scale = prog.minor ? NAT_MINOR : MAJOR;
+  const root = 48 + Math.floor(rng() * 7); // C3 .. F#3
+  const degree = (d) => root + scale[(d - 1) % 7] + 12 * Math.floor((d - 1) / 7);
+  const BARS = 20, notes = [], beatTrack = [];
+  const swing = (b) => (Math.abs(b % 1 - 0.5) < 1e-6 ? b + 0.08 : b); // swung off-beat eighths
+
+  // chords (voice-led) + bass on the second marble, channel 1
+  let prev = null;
+  const voicings = [];
+  for (let b = 0; b < BARS; b++) {
+    const [d, q] = prog.chords[b % 4];
+    const r = degree(d), shape = CHORD_SHAPES[q];
+    // choose the inversion nearest the previous voicing, around middle C
+    let best = null;
+    for (let inv = 0; inv < shape.length; inv++) for (const oct of [0, 12, -12]) {
+      const v = shape.map((iv, i) => r + iv + oct + (i < inv ? 12 : 0)).sort((x, y) => x - y);
+      if (v[0] < 50 || v[v.length - 1] > 79) continue;
+      const cost = prev ? v.reduce((a, m, i) => a + Math.abs(m - (prev[i] ?? prev[prev.length - 1])), 0) : Math.abs(v[0] - 57);
+      if (!best || cost < best.cost) best = { v, cost };
+    }
+    prev = (best || { v: shape.map((iv) => r + iv + 12) }).v;
+    voicings.push({ v: prev, bass: r - 12 });
+  }
+  voicings.forEach(({ v, bass }, b) => {
+    const t0 = b * barLen;
+    const push = b > 0 && rng() < 0.3; // anticipate the chord on the "and" of 4
+    const tc = push ? t0 - 0.5 * beat : t0;
+    for (const m of v) notes.push({ t: tc, dur: barLen * 0.95, midi: m, vel: 0.45, ch: 1 });
+    notes.push({ t: t0, dur: beat * 1.8, midi: bass, vel: 0.6, ch: 1 });
+    notes.push({ t: t0 + 2 * beat, dur: beat * 1.5, midi: bass + (rng() < 0.3 ? 7 : 0), vel: 0.5, ch: 1 });
+  });
+
+  // melody: a two-bar pentatonic motif over the chords, repeated with small variations
+  const penta = prog.minor ? [0, 3, 5, 7, 10] : [0, 2, 4, 7, 9];
+  const melodyNote = (i) => root + 12 + penta[((i % 5) + 5) % 5] + 12 * Math.floor(i / 5);
+  const rhythms = [[0, 1, 1.5, 3], [0.5, 1.5, 2.5, 3], [0, 0.5, 2, 3.5], [1, 1.5, 2, 3]];
+  const makeMotif = () => [0, 1].flatMap((half) => pick(rhythms).map((b) => ({ b: half * 4 + b, step: Math.floor(rng() * 7) + 2 })));
+  let motif = makeMotif();
+  for (let b = 0; b < BARS; b += 2) {
+    if (b === 8 || b === 14) motif = makeMotif(); // a new phrase for the second section
+    const resting = b < 2 || b >= BARS - 2;
+    for (const { b: mb, step } of motif) {
+      if (resting && rng() < 0.35) continue; // sparser intro and outro
+      if (rng() < 0.12) continue; // little variations
+      const vary = rng() < 0.2 ? (rng() < 0.5 ? 1 : -1) : 0;
+      const t = (b * bar + swing(mb)) * beat;
+      if (t >= BARS * barLen - beat) continue;
+      notes.push({ t, dur: beat * (0.7 + rng() * 0.8), midi: melodyNote(step + vary), vel: 0.55 + rng() * 0.2, ch: 0 });
+    }
+  }
+
+  // the beat track (background): boom-bap with swung hats
+  for (let b = 0; b < BARS; b++) {
+    const t0 = b * bar;
+    const kicks = [0, 2.5, ...(rng() < 0.5 ? [1.75] : [])];
+    for (const k of kicks) beatTrack.push({ t: (t0 + k) * beat, midi: 36, vel: 0.8, ch: 9, dur: 0.1 });
+    for (const sn of [1, 3]) beatTrack.push({ t: (t0 + sn) * beat, midi: 38, vel: 0.7, ch: 9, dur: 0.1 });
+    for (let e = 0; e < 8; e++) beatTrack.push({ t: (t0 + swing(e / 2)) * beat, midi: e === 7 && rng() < 0.3 ? 46 : 42, vel: e % 2 ? 0.45 : 0.6, ch: 9, dur: 0.05 });
+  }
+
+  // the switch blocks (song time; the state at t = 0 is the intro's: muffled, crackle, no beat)
+  const at = (b) => b * barLen;
+  const fx = [
+    { t: at(4), set: { beat: true, filter: false } },
+    { t: at(12), set: { filter: true } },
+    { t: at(14), set: { filter: false } },
+    { t: at(18), set: { beat: false, filter: true } }, // the outro: muffled again, like the start (seamless loop)
+  ];
+  const title = pick(LOFI_TITLES);
+  return { name: `lofi — ${title}`, notes, beat: beatTrack, fx, initial: { beat: false, filter: true, crackle: true }, bpm, bar, lofi: true, seed };
+}
+
+/**
+ * Put the switch blocks on the melody marble: each switch time becomes the hit at that moment
+ * (if there's a melody note within 0.1 s, it's played on the switch) or an extra, note-less hit.
+ * Call after grouping and assignObjects; marks those groups obj = 'switch', fx = settings.
+ */
+export function attachSwitches(parts, fx, t0 = 0) {
+  const lead = parts[0];
+  for (const f of fx) {
+    const t = f.t + t0;
+    let g = lead.groups.find((x) => Math.abs(x.t - t) < 0.1);
+    if (!g) {
+      g = { t, notes: [] };
+      lead.groups.push(g);
+      lead.groups.sort((a, b) => a.t - b.t);
+    }
+    g.obj = 'switch';
+    g.fx = f.set;
+  }
+  return parts;
+}
+

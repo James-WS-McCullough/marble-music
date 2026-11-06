@@ -3,7 +3,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { planCourse, marbleAt, padShape, lastHitIndex, MARBLE_R, toPlain, rehydratePlan } from '../src/planner.js';
-import { buildSong, generateSong, groupNotes, splitParts, assignObjects, SONGS } from '../src/music.js';
+import { buildSong, generateSong, generateLofi, attachSwitches, groupNotes, splitParts, assignObjects, SONGS } from '../src/music.js';
 import { stressSongs } from './stress-songs.js';
 import { clipReport } from './clip-check.js';
 
@@ -93,8 +93,8 @@ for (const song of SONG_LIST) for (const second of ['harmony', 'percussion']) {
         for (const l of plan.lanes) {
           for (const h of l.hits) assert.ok(!inside(b, h.pos), `${l.name} pad inside a seam frame`);
           for (const st of l.stubs) if (inside(b, st)) items.push(`stub ${(st.x - c.x).toFixed(3)},${(st.y - c.y).toFixed(3)}`);
-          for (const r of l.rails) for (let s = r.s0 || 0; s <= r.sEnd; s += 0.05) {
-            const q = r.path.at(s);
+          for (const r of l.rails) for (let j = 0; (r.s0 || 0) + j * 0.05 <= r.sEnd + 1e-9; j++) { // (by index: no float drift)
+            const q = r.path.at(Math.min(r.sEnd, (r.s0 || 0) + j * 0.05));
             if (inside(b, q)) items.push(`rail ${(q.x - c.x).toFixed(2)},${(q.y - c.y).toFixed(2)}`);
           }
           for (const q of [...l.rails.flatMap((r) => r.brackets || []), ...l.stubs.map((st) => st.bracket)])
@@ -193,6 +193,26 @@ test('every instrument kind plans cleanly (keys, bars, buttons, metal tubes, woo
       assert.ok(!(h.pen >= 30), `${melody}/${harmony} pad ${i}: compromise`);
       assert.ok(Math.hypot(h.vout.x, h.vout.y) <= 1.151 * Math.hypot(h.vin.x, h.vin.y), 'no launch');
     }));
+  }
+});
+
+test('lofi songs plan cleanly: e-piano keys, vinyl records and switch blocks on the melody track', () => {
+  for (const seed of [1, 2, 3, 8]) {
+    const song = generateLofi(seed);
+    const split = splitParts(song.notes, { second: 'harmony' });
+    const parts = assignObjects(split.parts.map((p) => ({ ...p, groups: groupNotes(p.notes).groups })), { seed, bpm: song.bpm, bar: song.bar, lofi: true });
+    attachSwitches(parts, song.fx);
+    const t0 = performance.now();
+    const plan = planCourse(parts, { seed });
+    const ms = performance.now() - t0;
+    assert.deepEqual(clipReport(plan), [], `lofi ${seed}: no clipping`);
+    const types = plan.lanes.map((l) => new Set(l.hits.map((h) => h.type)));
+    assert.ok(types[0].has('switch') && types[0].has('epiano'), [...types[0]].join(','));
+    assert.deepEqual([...types[1]], ['vinyl']);
+    assert.equal(plan.lanes[0].hits.filter((h) => h.type === 'switch').length, song.fx.length);
+    const compromises = plan.lanes.flatMap((l) => l.hits.filter((h) => h.pen >= 30));
+    assert.equal(compromises.length, 0, `lofi ${seed}: ${compromises.length} compromises`);
+    assert.ok(ms < 20000, `lofi ${seed} planned in ${ms.toFixed(0)} ms`);
   }
 });
 

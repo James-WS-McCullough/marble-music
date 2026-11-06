@@ -1,38 +1,48 @@
 # Marble Music
 
-Procedurally generated marble-run music videos with a retro chiptune sound. Two marbles
+Procedurally generated marble-run music videos. Two marbles
 bounce diagonally across a big painted wall (clouds, pipes, pixel-art sprites) off chunky
 keys, bars, drums and cymbals, and every hit lands exactly on a note. A close follow camera
 keeps the shot sparse: only a handful of pads are on screen at once. The first marble plays the melody (with any other notes as chords);
 the second plays either the harmony/bass or the percussion. Every sound you hear has an object
 you can see. At the bottom the marbles roll into gutters, ride lifts back up, and it loops.
 
-## Sound fonts
+## Sounds
 
-All sounds are synthesised in `src/audio.js` — no samples ripped from games. Each font
-imitates a console's sound *hardware*:
+All sounds are synthesised in `src/audio.js` (no samples). There are no sound fonts: **each
+object has its own voice**, so what you hear always matches what the marble hits: keys and
+wooden bars are a marimba, arcade buttons blip, metal tubes ring like tubular bells, bamboo
+knocks, bottles ping, neon tubes buzz, handbells chime, e-piano keys and vinyl records play a
+warm Rhodes-style electric piano, and drums are an acoustic kit or woodblocks & cowbells.
+Open `test/audio-check.html` to audition every voice on a short phrase.
 
-- **NES (2A03-style)** — 12.5/25/50% pulse waves with a 2-frame "bite" on each attack,
-  4-bit stepped triangle bass, LFSR noise + triangle-drop drums, 60 Hz stepped envelopes with
-  short releases, delayed vibrato, a hand-made-style pulse echo, chords played as fast
-  2-frame arpeggios, and the console's gentle output filtering.
-- **SNES (SPC700-style)** — 32 kHz looped sampled instruments (reedy flute lead chorused
-  left/right, string pad, picked bass, harp chords), click-free loop points, hardware-style
-  exponential ADSR, soft Gaussian-ish top end and a stereo ping-pong echo.
-- **Genesis (YM2612-style FM)** — 2-operator FM brass lead, slap bass, FM e-piano, crunchy
-  low-bit PCM drums.
-- **Marimba / Glockenspiel / Vibraphone (original)** — every note on one acoustic mallet
-  instrument built from decaying sine partials, with acoustic drums.
-- **Acoustic ensemble** — marimba lead with vibraphone harmony.
+## Lofi
 
-Load any MIDI file to remix it in these styles. Open `test/audio-check.html` to audition the
-fonts on a short phrase.
+**Lofi (from seed)** composes a laid-back lofi tune: jazzy 7th/9th chord progressions with
+smooth voice leading on vinyl records (the back marble), a swung pentatonic melody on e-piano
+keys that repeats with small variations (the front marble), and a dusty boom-bap beat in the
+background. The structure is played by **switch blocks** on the melody track — levers the
+marble flips as it passes: the intro is muffled behind a closed low-pass filter with vinyl
+crackle, a switch drops the beat in and opens the filter, another closes it for a dip and
+reopens it, and the outro takes the beat out and muffles it again (so the loop's ends match).
+The picture goes soft and warm while the filter is closed. Pick the **Lofi bedroom** theme
+(dusky wallpaper, framed pictures, potted plants, twinkling fairy lights).
+
+**Endless lofi ∞** keeps going: while one song plays, the next is composed and planned in a
+background worker, and it takes over exactly at a loop seam (`src/timeline.js` keeps the
+songs on one clock). If the next one isn't ready in time, the current song simply loops again.
+
+## Settings
+
+Under **Settings**: camera zoom (the seam shot stays fixed so the loop stays seamless),
+brightness, glow (bloom), decoration density, volume, and whether the lofi switch effects
+(filter, crackle) apply.
 
 ## Run
 
 ```sh
 npm start          # serves on http://localhost:8080 (no-cache python server)
-npm test           # the full test suite (~1.5 min)
+npm test           # the full test suite (~2.5 min)
 npm run test:quick # music, MIDI, physics and audio only (seconds)
 ```
 
@@ -46,8 +56,8 @@ the same instrument). **Drums play on** the drum kit, **woodblocks & cowbells**,
 section. Each object's sound follows what you see.
 
 Pick a **theme** (Sky, Spooky — a moonlit purple stone wall with ghosts, bats, pumpkins
-and flickering candles — or Lab, a clean white test lab with light panels, hazard plates
-and indicator lights that blink on the beat). Courses are planned in a background worker
+and flickering candles — Lab, a grey-panelled test lab with light panels, hazard plates
+and indicator lights that blink on the beat — or Lofi bedroom). Courses are planned in a background worker
 with a progress spinner, so the page never freezes.
 
 Click to start (browsers need a click before playing audio). Pick a built-in song, roll a
@@ -124,13 +134,15 @@ The trick is to work **backwards from the music** instead of simulating forwards
 
 `npm test` runs everything with Node's built-in test runner:
 
-- `test/music.test.js` — note names, the song notation, built-in and procedural songs,
-  grouping notes into hits, splitting a song between the two marbles.
+- `test/music.test.js` — note names, the song notation, built-in, procedural and lofi songs
+  (structure, switch blocks), grouping notes into hits, splitting a song between the marbles.
+- `test/timeline.test.js` — endless play: songs hand over exactly at a loop seam, every event
+  is scheduled once, the beat only plays while switched on.
 - `test/midi.test.js` — MIDI parsing from hand-built files (tempo changes, running status,
   note-offs, several tracks).
 - `test/physics.test.js` — track paths, flights, rolling, switchbacks, dropping onto a rail.
-- `test/audio.test.js` — every sound font rendered offline (`node-web-audio-api`): every voice
-  sounds, nothing is NaN or clipping, notes are in tune.
+- `test/audio.test.js` — every object's voice rendered offline (`node-web-audio-api`): it
+  sounds, nothing is NaN or clipping, notes are in tune; the lofi beat, filter and crackle.
 - `test/camera.test.js` — the camera: the loop's first and last shots are identical (at any
   screen shape), the seam shot stays inside its sign, and the camera never jumps.
 - `test/course.test.js` — the course contract for built-in, procedural and awkward
