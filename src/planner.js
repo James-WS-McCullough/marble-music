@@ -73,6 +73,14 @@ export function padType(style, notes, obj = null) {
   if (style === 'drums' || style === 'cymbals') {
     const ms = notes.map((n) => n.midi);
     if (ms.some((m) => KICKS.has(m))) return 'kick';
+    // real cowbell / woodblock notes always get theirs; the 'blocks' kit swaps snares and toms for
+    // woodblocks and hi-hats for cowbells
+    if (ms.includes(56)) return 'cowbell';
+    if (ms.includes(76) || ms.includes(77)) return 'woodblock';
+    if (obj === 'blocks') {
+      if (ms.some((m) => SNARES.has(m) || !CYMBALS.has(m))) return 'woodblock';
+      if (ms.some((m) => HATS.has(m))) return 'cowbell';
+    }
     if (ms.some((m) => SNARES.has(m))) return 'snare';
     if (ms.some((m) => !CYMBALS.has(m))) return 'tom';
     if (ms.some((m) => HATS.has(m))) return 'hat';
@@ -88,8 +96,10 @@ export function padType(style, notes, obj = null) {
  */
 export function padShape(type, midi, scale = 1) {
   const s = padShapeFull(type, midi);
-  return scale === 1 ? s : { len: s.len * scale, thick: s.thick };
+  return scale === 1 || type === 'bamboo' ? s : { len: s.len * scale, thick: s.thick };
 }
+/** Pads mounted straight on the wall (no bracket: the pad itself runs back to the wall). */
+export const WALL_MOUNTED = new Set(['bamboo']);
 function padShapeFull(type, midi) {
   switch (type) {
     case 'kick': return { len: 0.26, thick: 0.1 };
@@ -101,6 +111,14 @@ function padShapeFull(type, midi) {
     case 'chime': return { len: clamp(0.3 - (midi - 60) * 0.004, 0.14, 0.3), thick: 0.03 };
     case 'button': return { len: 0.17, thick: 0.055 }; // an arcade button: round cap in a bezel
     case 'tube': return { len: clamp(0.42 - (midi - 48) * 0.006, 0.2, 0.42), thick: 0.045 }; // a chime tube (lower = longer)
+    // a wooden tube sticking straight out of the wall: in the wall plane it's a circle (the marble
+    // bounces off its rounded side), so its "length" along the surface is ~0 and thick = diameter
+    case 'bamboo': return { len: 0.001, thick: 2 * clamp(0.07 - (midi - 48) * 0.0012, 0.035, 0.07) };
+    case 'bottle': return { len: 0.26, thick: 0.075 }; // a glass bottle lying along the surface
+    case 'neon': return { len: clamp(0.36 - (midi - 48) * 0.004, 0.2, 0.36), thick: 0.035 }; // a glowing tube
+    case 'bell': return { len: 0.2, thick: 0.11 }; // a handbell on its side, struck on the flank
+    case 'woodblock': return { len: 0.17, thick: 0.06 };
+    case 'cowbell': return { len: 0.13, thick: 0.085 };
     default: return { len: clamp(0.32 - (midi - 48) * 0.004, 0.16, 0.32), thick: 0.05 };
   }
 }
@@ -386,8 +404,10 @@ function padObstacle(k, hit, idx) {
   return [
     { k, own: true, hitIdx: idx, x1: cx - (tx * len) / 2, y1: cy - (ty * len) / 2, x2: cx + (tx * len) / 2, y2: cy + (ty * len) / 2, r: thick / 2 },
     // the bracket holding this pad (at the middle of its back face) runs back to the wall,
-    // through every lane behind it
-    { k, own: false, bracket: true, x1: cx - (n.x * thick) / 2, y1: cy - (n.y * thick) / 2, x2: cx - (n.x * thick) / 2, y2: cy - (n.y * thick) / 2, r: 0.012 },
+    // through every lane behind it; a wall-mounted pad is itself that "bracket", full width
+    WALL_MOUNTED.has(hit.type)
+      ? { k, own: false, bracket: true, x1: cx, y1: cy, x2: cx, y2: cy, r: thick / 2 }
+      : { k, own: false, bracket: true, x1: cx - (n.x * thick) / 2, y1: cy - (n.y * thick) / 2, x2: cx - (n.x * thick) / 2, y2: cy - (n.y * thick) / 2, r: 0.012 },
   ];
 }
 
@@ -655,7 +675,7 @@ export function planCourse(parts, options = {}) {
   for (const lane of lanes) {
     const grid0 = grid.length;
     let best = null;
-    for (const scale of [1, 1.3, 0.75]) {
+    for (const scale of [1, 1.3, 0.75, 1.6, 0.5]) {
       dropScale = scale;
       Object.assign(lane, { segs: [], hits: [], rails: [], compromises: 0 });
       planLane(lane);

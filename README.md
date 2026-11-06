@@ -36,10 +36,14 @@ npm test           # the full test suite (~1.5 min)
 npm run test:quick # music, MIDI, physics and audio only (seconds)
 ```
 
-Pick what the marbles hit with **Objects**: *Mix it up* (default — the object changes phrase
-by phrase), *Classic* keys & bars, *Arcade buttons* (light up and flash, with an electric
-blip sound) or *Chime tubes* (shimmer and wobble, with a tubular-bell sound). The bass stays
-on bars and drums stay drums; each object's sound follows what you see.
+Choose what each marble plays on — **Melody plays on** and **Harmony / bass plays on**:
+keys (melody) or wooden bars (harmony), **arcade buttons** (flash, electric blip), **metal
+chime tubes** (shimmer, tubular bell), **bamboo tubes** sticking out of the wall (hollow
+knock), **glass bottles** with coloured water (sloshes, glassy ping), **neon light tubes**
+(glow and flare, buzzy synth) or **handbells** (swing, bright bell) — or *Mix by song
+section*, which changes instrument with the song's structure (a repeated tune comes back on
+the same instrument). **Drums play on** the drum kit, **woodblocks & cowbells**, or both by
+section. Each object's sound follows what you see.
 
 Pick a **theme** (Sky, Spooky — a moonlit purple stone wall with ghosts, bats, pumpkins
 and flickering candles — or Lab, a clean white test lab with light panels, hazard plates

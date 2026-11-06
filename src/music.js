@@ -303,7 +303,11 @@ export function splitParts(notes, { second = 'auto' } = {}) {
 // Ode to Joy's A A' B A' plays keys, keys, buttons, keys. Instruments only change on section
 // boundaries, together in both marbles. The bass always stays on bars, drums stay drums.
 // Sets g.obj on each group; deterministic for a seed.
-export const OBJECT_MODES = ['mix', 'classic', 'arcade', 'chimes'];
+/** Choices for the melody marble and for the second marble's harmony/bass ('mix' = by section). */
+export const MELODY_OBJECTS = ['mix', 'key', 'button', 'tube', 'bamboo', 'bottle', 'neon', 'bell'];
+export const HARMONY_OBJECTS = ['mix', 'bar', 'button', 'tube', 'bamboo', 'bottle', 'neon', 'bell'];
+/** The drum marble: the standard kit, woodblocks & cowbells, or both by song section. */
+export const DRUM_KITS = ['kit', 'blocks', 'mix'];
 
 /**
  * The song's sections: { t0, len, labels } where section i covers [t0 + i len, t0 + (i+1) len)
@@ -343,24 +347,30 @@ export function songSections(parts, { bpm = 120, bar = 4 } = {}) {
   return four.distinct > Math.max(2, four.labels.length / 2) ? label(8) : four;
 }
 
-export function assignObjects(parts, { mode = 'mix', seed = 1, bpm = 120, bar = 4 } = {}) {
+/**
+ * Choose what each hit is played on: melody = MELODY_OBJECTS entry, harmony = HARMONY_OBJECTS
+ * entry (for the second marble when it plays harmony or bass). An explicit choice is used for
+ * every hit (even a bass line); 'mix' follows the song's sections (bass stays on bars).
+ */
+export function assignObjects(parts, { melody = 'mix', harmony = 'mix', drums = 'kit', seed = 1, bpm = 120, bar = 4 } = {}) {
   const rng = mulberry32((seed >>> 0) ^ 0x9e3779b9);
-  const sections = mode === 'mix' ? songSections(parts, { bpm, bar }) : null;
+  const sections = melody === 'mix' || harmony === 'mix' || drums === 'mix' ? songSections(parts, { bpm, bar }) : null;
   const beat = 60 / bpm;
+  const sectionOf = (t) => Math.min(sections.labels.length - 1, Math.max(0, Math.floor((t - sections.t0 + 0.25 * beat) / sections.len)));
   for (const p of parts) {
-    if (p.style === 'drums') continue;
-    const base = p.style === 'bars' ? 'bar' : 'key';
-    if (mode === 'classic' || p.role === 'bass') { for (const g of p.groups) g.obj = base; continue; }
-    if (mode === 'arcade' || mode === 'chimes') { for (const g of p.groups) g.obj = mode === 'arcade' ? 'button' : 'tube'; continue; }
-    // the first tune keeps the classic instrument; each new tune gets the next one (order by seed)
-    const others = p.role === 'lead' ? ['button', 'tube'] : ['tube', 'button'];
-    if (rng() < 0.5) others.reverse();
-    const order = [base, ...others];
-    const { t0, len, labels } = sections;
-    for (const g of p.groups) {
-      const i = Math.min(labels.length - 1, Math.max(0, Math.floor((g.t - t0 + 0.25 * beat) / len)));
-      g.obj = order[labels[i] % order.length];
+    if (p.style === 'drums') { // the kit: as chosen, or the standard kit for the first tune and blocks for others
+      for (const g of p.groups) g.obj = drums === 'mix' ? (sections.labels[sectionOf(g.t)] % 2 ? 'blocks' : 'kit') : drums;
+      continue;
     }
+    const lead = p.role === 'lead', base = lead ? 'key' : 'bar';
+    const choice = lead ? melody : harmony;
+    if (choice !== 'mix') { for (const g of p.groups) g.obj = choice; continue; }
+    if (p.role === 'bass') { for (const g of p.groups) g.obj = 'bar'; continue; }
+    // the first tune keeps the classic instrument; each new tune gets the next one (order by seed)
+    const others = lead ? ['button', 'tube', 'bamboo', 'bottle', 'neon', 'bell'] : ['tube', 'bamboo', 'button', 'bottle', 'neon', 'bell'];
+    for (let i = others.length - 1; i > 0; i--) { const j = Math.floor(rng() * (i + 1)); [others[i], others[j]] = [others[j], others[i]]; }
+    const order = [base, ...others];
+    for (const g of p.groups) g.obj = order[sections.labels[sectionOf(g.t)] % order.length];
   }
   return parts;
 }

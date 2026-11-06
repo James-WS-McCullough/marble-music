@@ -90,16 +90,22 @@ test('splitting: auto picks percussion only when the song has drums; none = melo
   assert.equal(none.parts.length, 1);
 });
 
-test('objects: classic / arcade / chimes use one kind; bass stays on bars, drums stay drums', () => {
+test('objects: each marble can have its own instrument; drums stay drums', () => {
   const make = () => splitParts(buildSong('ode').notes, { second: 'harmony' }).parts.map((p) => ({ ...p, groups: groupNotes(p.notes).groups }));
-  const kinds = (parts, k) => new Set(parts[k].groups.map((g) => g.obj));
-  assert.deepEqual([...kinds(assignObjects(make(), { mode: 'classic' }), 0)], ['key']);
-  assert.deepEqual([...kinds(assignObjects(make(), { mode: 'arcade' }), 0)], ['button']);
-  assert.deepEqual([...kinds(assignObjects(make(), { mode: 'chimes' }), 0)], ['tube']);
-  assert.deepEqual([...kinds(assignObjects(make(), { mode: 'mix', bpm: 132 }), 1)], ['bar'], 'the bass stays on bars');
+  const kinds = (parts, k) => [...new Set(parts[k].groups.map((g) => g.obj))];
+  for (const melody of ['key', 'button', 'tube', 'bamboo', 'bottle', 'neon', 'bell']) for (const harmony of ['bar', 'button', 'tube', 'bamboo', 'bottle', 'neon', 'bell']) {
+    const parts = assignObjects(make(), { melody, harmony });
+    assert.deepEqual(kinds(parts, 0), [melody]);
+    assert.deepEqual(kinds(parts, 1), [harmony], 'an explicit choice applies even to a bass line');
+  }
+  assert.deepEqual(kinds(assignObjects(make(), { melody: 'mix', harmony: 'mix', bpm: 132 }), 1), ['bar'], 'the mix keeps a bass line on bars');
   const drums = splitParts(generateSong(42).notes, { second: 'percussion' }).parts.map((p) => ({ ...p, groups: groupNotes(p.notes).groups }));
-  assignObjects(drums, { mode: 'mix', seed: 1 });
-  assert.ok(drums[1].groups.every((x) => x.obj === undefined), 'drums stay drums');
+  assignObjects(drums, { melody: 'bamboo', harmony: 'bamboo' });
+  assert.deepEqual(kinds(drums, 1), ['kit'], 'drums stay on the drum kit by default');
+  assert.deepEqual(kinds(drums, 0), ['bamboo']);
+  assert.deepEqual(kinds(assignObjects(drums, { drums: 'blocks' }), 1), ['blocks'], 'or woodblocks & cowbells');
+  const mixed = assignObjects(drums, { drums: 'mix', bpm: 131 });
+  assert.equal(kinds(mixed, 1).length, 2, 'or both, by song section');
 });
 
 test('objects mix follows the song: sections of whole bars, repeats keep their instrument', () => {
@@ -108,7 +114,7 @@ test('objects mix follows the song: sections of whole bars, repeats keep their i
   const sec = songSections(parts, { bpm: song.bpm, bar: song.bar });
   assert.ok(Math.abs(sec.len - 4 * song.bar * 60 / song.bpm) < 1e-9, 'four-bar sections');
   assert.deepEqual(sec.labels, [0, 0, 1, 0], "Ode to Joy is A A' B A'");
-  assignObjects(parts, { mode: 'mix', seed: 3, bpm: song.bpm, bar: song.bar });
+  assignObjects(parts, { seed: 3, bpm: song.bpm, bar: song.bar });
   const objAt = (t) => parts[0].groups.find((g) => g.t >= t - 1e-9).obj;
   const L = sec.len;
   assert.equal(objAt(0), 'key', 'the first tune keeps the classic keys');
@@ -126,7 +132,7 @@ test('objects mix follows the song: sections of whole bars, repeats keep their i
   const twParts = splitParts(tw.notes, { second: 'harmony' }).parts.map((p) => ({ ...p, groups: groupNotes(p.notes).groups }));
   assert.deepEqual(songSections(twParts, { bpm: tw.bpm, bar: tw.bar }).labels, [0, 1, 0], 'Twinkle is A B A');
   const again = splitParts(song.notes, { second: 'harmony' }).parts.map((p) => ({ ...p, groups: groupNotes(p.notes).groups }));
-  assignObjects(again, { mode: 'mix', seed: 3, bpm: song.bpm, bar: song.bar });
+  assignObjects(again, { seed: 3, bpm: song.bpm, bar: song.bar });
   assert.deepEqual(again[0].groups.map((x) => x.obj), g.map((x) => x.obj), 'deterministic');
 });
 

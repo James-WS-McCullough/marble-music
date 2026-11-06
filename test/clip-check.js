@@ -4,7 +4,7 @@
 //   - a front lane's support brackets run back to the wall through every lane behind it, so the
 //     back lane's pads, track and marble must stay clear of them
 //   - a marble must not pass through anything it isn't touching at that moment
-import { marbleAt, padShape, MARBLE_R, TUBE_R } from '../src/planner.js';
+import { marbleAt, padShape, MARBLE_R, TUBE_R, WALL_MOUNTED } from '../src/planner.js';
 
 const sub = (a, b) => ({ x: a.x - b.x, y: a.y - b.y });
 const dot = (a, b) => a.x * b.x + a.y * b.y;
@@ -28,8 +28,9 @@ export function padBody(h) {
   const { len, thick } = padShape(h.type, h.midi, h.scale);
   const n = h.normal, c = { x: h.pos.x - n.x * (MARBLE_R + thick / 2), y: h.pos.y - n.y * (MARBLE_R + thick / 2) };
   const t = { x: -n.y, y: n.x };
+  const wall = WALL_MOUNTED.has(h.type); // runs back to the wall itself, at full width
   return { a: { x: c.x - (t.x * len) / 2, y: c.y - (t.y * len) / 2 }, b: { x: c.x + (t.x * len) / 2, y: c.y + (t.y * len) / 2 }, r: thick / 2,
-    bracket: { x: c.x - (n.x * thick) / 2, y: c.y - (n.y * thick) / 2 } };
+    bracket: wall ? { x: c.x, y: c.y, r: thick / 2 } : { x: c.x - (n.x * thick) / 2, y: c.y - (n.y * thick) / 2, r: 0.008 } };
 }
 
 /** Track pieces as thick segments: glass tubes around the marble's path, or a rail under it. */
@@ -74,12 +75,12 @@ export function clipReport(plan, { tol = 0.004 } = {}) {
       if (segs.some((s) => distSegSeg(A.a, A.b, s.a, s.b) < A.r + s.r - tol)) issues.push(`${lane.name}: pad ${i} clips ${rail.kind} ${ri}`);
     }));
     // pads / track vs front lanes' brackets (rods r ~ 0.007)
-    const ROD = 0.008;
+    const ROD = 0.008, rodR = (q) => q.r ?? ROD;
     bodies.forEach((A, i) => frontBrackets.forEach((q) => {
-      if (distPointSeg(q, A.a, A.b) < A.r + ROD - tol) issues.push(`${lane.name}: pad ${i} pierced by a front bracket`);
+      if (distPointSeg(q, A.a, A.b) < A.r + rodR(q) - tol) issues.push(`${lane.name}: pad ${i} pierced by a front bracket`);
     }));
     tracks.forEach(({ rail, segs }) => frontBrackets.forEach((q) => {
-      if (segs.some((s) => distPointSeg(q, s.a, s.b) < s.r + ROD - tol)) issues.push(`${lane.name}: ${rail.kind} pierced by a front bracket`);
+      if (segs.some((s) => distPointSeg(q, s.a, s.b) < s.r + rodR(q) - tol)) issues.push(`${lane.name}: ${rail.kind} pierced by a front bracket`);
     }));
     // marble vs everything it isn't touching
     const firstT = lane.hits[0].t - 1, lastT = lane.hits[lane.hits.length - 1].t + 0.3;
@@ -91,7 +92,7 @@ export function clipReport(plan, { tol = 0.004 } = {}) {
         const A = bodies[i];
         const dd = MARBLE_R + A.r - distPointSeg(m, A.a, A.b); if (dd > tol) { issues.push(`${lane.name}: marble passes through pad ${i}`); break; }
       }
-      frontBrackets.forEach((q, qi) => { if (Math.hypot(m.x - q.x, m.y - q.y) < MARBLE_R + ROD - tol) issues.push(`${lane.name}: marble hits front bracket ${qi}`); });
+      frontBrackets.forEach((q, qi) => { if (Math.hypot(m.x - q.x, m.y - q.y) < MARBLE_R + rodR(q) - tol) issues.push(`${lane.name}: marble hits front bracket ${qi}`); });
     }
   }
   return [...new Set(issues)];

@@ -21,7 +21,7 @@ function planFor(song, second, vMax = 2.3) {
   if (!cache.has(key)) {
     const split = splitParts(song.notes, { second });
     if (split.second !== second) { cache.set(key, null); return null; }
-    const parts = assignObjects(split.parts.map((p) => ({ ...p, groups: groupNotes(p.notes).groups })), { mode: 'mix', seed: 7, bpm: song.bpm || 120, bar: song.bar || 4 });
+    const parts = assignObjects(split.parts.map((p) => ({ ...p, groups: groupNotes(p.notes).groups })), { seed: 7, bpm: song.bpm || 120, bar: song.bar || 4 });
     const t0 = Date.now();
     const plan = planCourse(parts, { seed: 7, vMax });
     cache.set(key, { plan, parts, ms: Date.now() - t0 });
@@ -42,8 +42,8 @@ for (const song of SONG_LIST) for (const second of ['harmony', 'percussion']) {
     await t.test('each pad is the object chosen for it (keys, bars, buttons, tubes, drums)', () => {
       plan.lanes.forEach((lane, k) => lane.hits.forEach((h, i) => {
         const obj = parts[k].groups[i].obj;
-        if (obj) assert.equal(h.type, obj);
-        else assert.ok(['kick', 'snare', 'tom', 'hat', 'crash'].includes(h.type));
+        if (lane.style === 'drums') assert.ok(['kick', 'snare', 'tom', 'hat', 'crash', 'woodblock', 'cowbell'].includes(h.type));
+        else assert.equal(h.type, obj);
       }));
     });
 
@@ -179,6 +179,33 @@ test('fast passages get smaller pads (like a glockenspiel run)', () => {
   const scales = r.plan.lanes[0].hits.map((h) => h.scale);
   assert.ok(Math.min(...scales) < 0.6, `smallest ${Math.min(...scales)}`);
   assert.ok(Math.max(...scales) > 0.8, `largest ${Math.max(...scales)}`);
+});
+
+test('every instrument kind plans cleanly (keys, bars, buttons, metal tubes, wooden tubes)', () => {
+  const song = buildSong('ode');
+  for (const [melody, harmony] of [['key', 'bamboo'], ['button', 'tube'], ['bamboo', 'bamboo'], ['bottle', 'neon'], ['neon', 'bell'], ['bell', 'bottle']]) {
+    const split = splitParts(song.notes, { second: 'harmony' });
+    const parts = assignObjects(split.parts.map((p) => ({ ...p, groups: groupNotes(p.notes).groups })), { melody, harmony });
+    const plan = planCourse(parts, { seed: 7 });
+    assert.deepEqual(clipReport(plan), [], `${melody}/${harmony}: no clipping`);
+    plan.lanes.forEach((l, k) => l.hits.forEach((h, i) => {
+      assert.equal(h.type, k === 0 ? melody : harmony);
+      assert.ok(!(h.pen >= 30), `${melody}/${harmony} pad ${i}: compromise`);
+      assert.ok(Math.hypot(h.vout.x, h.vout.y) <= 1.151 * Math.hypot(h.vin.x, h.vin.y), 'no launch');
+    }));
+  }
+});
+
+test('the woodblocks & cowbells kit plans cleanly', () => {
+  const song = generateSong(42);
+  const split = splitParts(song.notes, { second: 'percussion' });
+  const parts = assignObjects(split.parts.map((p) => ({ ...p, groups: groupNotes(p.notes).groups })), { drums: 'blocks' });
+  const plan = planCourse(parts, { seed: 7 });
+  const types = new Set(plan.lanes[1].hits.map((h) => h.type));
+  assert.ok(types.has('woodblock') && types.has('cowbell') && types.has('kick'), [...types].join(','));
+  assert.ok(!types.has('snare') && !types.has('hat'), 'snares and hats are swapped');
+  assert.deepEqual(clipReport(plan), []);
+  assert.ok(plan.lanes.every((l) => l.hits.every((h) => !(h.pen >= 30))));
 });
 
 test('a plan survives the trip to and from the planning worker (structured clone)', () => {

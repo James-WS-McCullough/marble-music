@@ -215,16 +215,22 @@ export class Synth {
    */
   playHit(notes, time, role = 'lead', font = this.font, obj = null) {
     const pitched = notes.filter((n) => n.ch !== 9);
-    for (const d of notes) if (d.ch === 9) this.play(d, time, role, font);
+    for (const d of notes) if (d.ch === 9) {
+      // real cowbell / woodblock notes, or the 'blocks' kit (snares & toms -> woodblocks, hats -> cowbells)
+      const m = d.midi, vel = d.vel ?? 0.8;
+      const hat = m === 42 || m === 44 || m === 46, snare = m >= 37 && m <= 40, tom = !CYM(m) && m > 40 && m !== 56;
+      if (m === 56 || (obj === 'blocks' && hat)) this.drum_cowbell(vel, time);
+      else if (m === 76 || m === 77 || (obj === 'blocks' && (snare || tom))) this.drum_woodblock(m === 77 || tom ? 'low' : 'high', vel, time);
+      else this.play(d, time, role, font);
+    }
     if (!pitched.length) return;
-    // arcade buttons and chime tubes have their own sound, whatever the font
-    if (obj === 'button' || obj === 'tube') {
+    // these objects have their own sound, whatever the font
+    const voice = OBJECT_VOICES[obj];
+    if (voice) {
       const top = pitched.reduce((a, n) => (n.midi > a.midi ? n : a));
       for (const n of pitched) {
         const r = role === 'lead' && n !== top ? 'chord' : role;
-        const dur = clamp(n.dur ?? 0.3, 0.06, 2.0), vel = n.vel ?? 0.8;
-        if (obj === 'button') this.note_arcade(n.midi, vel, time, dur, r);
-        else this.note_tube(n.midi, vel, time, dur, r);
+        this[voice](n.midi, n.vel ?? 0.8, time, clamp(n.dur ?? 0.3, 0.06, 2.0), r);
       }
       return;
     }
@@ -549,6 +555,119 @@ export class Synth {
     src.stop(t + 0.05);
   }
 
+  /** A wooden tube: a hollow, pitched knock (bamboo / boomwhacker): short body + a woody click. */
+  note_bamboo(midi, vel, t, dur, role) {
+    const f = mtof(midi), a = 0.3 * vel * (role === 'chord' ? 0.6 : 1);
+    const bus = this.ctx.createGain();
+    const warm = this.ctx.createBiquadFilter();
+    warm.type = 'lowpass'; warm.frequency.value = Math.min(9000, f * 8);
+    bus.connect(warm).connect(this.out);
+    const send = this.ctx.createGain();
+    send.gain.value = 0.3;
+    warm.connect(send).connect(this.revIn);
+    const body = 0.35 + 0.25 * Math.max(0, (72 - midi) / 24); // lower tubes ring a little longer
+    this.partial(bus, f, a, body, t);
+    this.partial(bus, f * 2.01, a * 0.22, body * 0.4, t);
+    this.partial(bus, f * 3.03, a * 0.1, body * 0.2, t);
+    const src = this.ctx.createBufferSource(), bp = this.ctx.createBiquadFilter(), cg = this.ctx.createGain();
+    src.buffer = this.white;
+    bp.type = 'bandpass'; bp.frequency.value = Math.min(4000, f * 3); bp.Q.value = 2.5;
+    cg.gain.setValueAtTime(a * 0.9, t);
+    cg.gain.exponentialRampToValueAtTime(0.0001, t + 0.025);
+    src.connect(bp).connect(cg).connect(bus);
+    src.start(t);
+    src.stop(t + 0.04);
+  }
+
+  /** A glass bottle: a clear, glassy ping (bright partials, quick to fade). */
+  note_bottle(midi, vel, t, dur, role) {
+    const f = mtof(midi), a = 0.2 * vel * (role === 'chord' ? 0.6 : 1);
+    const bus = this.ctx.createGain();
+    bus.connect(this.out);
+    const send = this.ctx.createGain();
+    send.gain.value = 0.45;
+    bus.connect(send).connect(this.revIn);
+    this.partial(bus, f, a, 1.5, t);
+    this.partial(bus, f * 2.32, a * 0.22, 0.55, t);
+    this.partial(bus, f * 4.1, a * 0.1, 0.22, t);
+    this.partial(bus, f * 6.6, a * 0.04, 0.08, t);
+  }
+
+  /** A neon light tube: a buzzy electric synth with a mains-hum shimmer. */
+  note_neon(midi, vel, t, dur, role) {
+    const ctx = this.ctx, f = mtof(midi), v = 0.6 + 0.4 * vel;
+    const amp = (role === 'chord' ? 0.03 : role === 'bass' ? 0.07 : 0.05) * v;
+    const len = Math.max(0.15, Math.min(dur, 1.2));
+    const g = this.voice({ echo: 0.25 });
+    const lp = ctx.createBiquadFilter();
+    lp.type = 'lowpass'; lp.frequency.value = Math.min(5000, f * 6); lp.Q.value = 1.5;
+    const hum = ctx.createGain(); // ~100 Hz flicker, like a neon tube
+    hum.gain.value = 1;
+    const lfo = ctx.createOscillator(), depth = ctx.createGain();
+    lfo.frequency.value = 100; depth.gain.value = 0.18;
+    lfo.connect(depth).connect(hum.gain);
+    lp.connect(hum).connect(g);
+    for (const det of [-7, 7]) {
+      const o = ctx.createOscillator();
+      o.type = 'sawtooth'; o.frequency.value = f; o.detune.value = det;
+      o.connect(lp); o.start(t); o.stop(t + len + 0.15);
+    }
+    lfo.start(t); lfo.stop(t + len + 0.15);
+    g.gain.setValueAtTime(0, t);
+    g.gain.linearRampToValueAtTime(amp, t + 0.006);
+    g.gain.setTargetAtTime(amp * 0.7, t + 0.01, 0.08);
+    g.gain.setValueAtTime(amp * 0.7, t + len);
+    g.gain.linearRampToValueAtTime(0, t + len + 0.1);
+  }
+
+  /** A handbell: bright with the strong ring an octave and a fifth up, long decay. */
+  note_bell(midi, vel, t, dur, role) {
+    const f = mtof(midi), a = 0.17 * vel * (role === 'chord' ? 0.6 : 1);
+    const bus = this.ctx.createGain();
+    bus.connect(this.out);
+    const send = this.ctx.createGain();
+    send.gain.value = 0.5;
+    bus.connect(send).connect(this.revIn);
+    this.partial(bus, f, a, 2.6, t);
+    this.partial(bus, f * 3.0, a * 0.45, 1.5, t); // the "twelfth"
+    this.partial(bus, f * 2.0, a * 0.1, 1.2, t);
+    this.partial(bus, f * 5.08, a * 0.14, 0.6, t);
+    this.partial(bus, f * 1.003, a * 0.3, 2.2, t); // shimmer
+  }
+
+  /** A woodblock: a sharp, hollow click (high or low). */
+  drum_woodblock(which, vel, t) {
+    const f = which === 'low' ? 620 : 920;
+    const bus = this.voice({ rev: 0.15 });
+    bus.gain.value = 1;
+    this.partial(bus, f, 0.45 * vel, 0.09, t, 'triangle');
+    this.partial(bus, f * 2.7, 0.12 * vel, 0.03, t);
+    const src = this.ctx.createBufferSource(), bp = this.ctx.createBiquadFilter(), g = this.ctx.createGain();
+    src.buffer = this.white;
+    bp.type = 'bandpass'; bp.frequency.value = f * 1.6; bp.Q.value = 3;
+    g.gain.setValueAtTime(0.4 * vel, t);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.015);
+    src.connect(bp).connect(g).connect(bus);
+    src.start(t); src.stop(t + 0.03);
+  }
+
+  /** A cowbell: the classic two-tone drum-machine bell. */
+  drum_cowbell(vel, t) {
+    const ctx = this.ctx, bus = this.voice({ rev: 0.12 });
+    const bp = ctx.createBiquadFilter();
+    bp.type = 'bandpass'; bp.frequency.value = 1000; bp.Q.value = 1.2;
+    bp.connect(bus);
+    for (const f of [540, 800]) {
+      const o = ctx.createOscillator();
+      o.type = 'square'; o.frequency.value = f;
+      o.connect(bp); o.start(t); o.stop(t + 0.45);
+    }
+    bus.gain.setValueAtTime(0.0001, t);
+    bus.gain.linearRampToValueAtTime(0.32 * vel, t + 0.002);
+    bus.gain.exponentialRampToValueAtTime(0.08 * vel, t + 0.06);
+    bus.gain.exponentialRampToValueAtTime(0.0001, t + 0.4);
+  }
+
   // ---------------------------------------------------------------- original instruments
   /** The original sound: one mallet instrument for every note (decaying sine partials). */
   mallet(kind, midi, vel, t) {
@@ -667,4 +786,5 @@ export class Synth {
   }
 }
 
+const OBJECT_VOICES = { button: 'note_arcade', tube: 'note_tube', bamboo: 'note_bamboo', bottle: 'note_bottle', neon: 'note_neon', bell: 'note_bell' };
 const CYM = (m) => m === 42 || m === 44 || m === 46 || (m >= 49 && m <= 59);

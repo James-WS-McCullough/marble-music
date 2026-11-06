@@ -66,18 +66,30 @@ for (const { id } of FONTS) {
   });
 }
 
-for (const obj of ['button', 'tube']) {
+for (const obj of ['button', 'tube', 'bamboo', 'bottle', 'neon', 'bell']) {
   test(`${obj}s have their own sound: audible, clean, in tune, with chords`, async () => {
     for (const font of ['nes', 'mallets']) {
       const r = await render(font, (s) => s.playHit([note(72, 0.4), note(64, 0.4), note(67, 0.4), note(36, 0.1, 9)], 0.05, 'lead', font, obj));
       assert.equal(r.nan, 0);
       assert.ok(r.rms > 0.002 && r.peak <= 1.0, `${obj}/${font}: rms ${r.rms.toFixed(4)} peak ${r.peak.toFixed(2)}`);
     }
-    if (obj === 'button') { // (a tube's inharmonic partials would fool the simple pitch estimator)
-      const r = await render('nes', (s) => s.playHit([note(64, 0.6)], 0, 'lead', 'nes', 'button'), 0.8);
+    if (!['tube', 'bell', 'bottle'].includes(obj)) { // (inharmonic overtones would fool the simple pitch estimator)
+      const r = await render('nes', (s) => s.playHit([note(64, 0.6)], 0, 'lead', 'nes', obj), 0.8);
       const cents = 1200 * Math.log2(pitch(r.d, 0.08, 0.3) / (440 * 2 ** ((64 - 69) / 12)));
       assert.ok(Math.abs(cents) < 30, `${cents.toFixed(0)} cents`);
     }
   });
 }
+
+test('woodblocks and cowbells: the blocks kit and real MIDI cowbell/woodblock notes', async () => {
+  for (const [notes, obj] of [[[note(38, 0.1, 9), note(45, 0.1, 9), note(42, 0.1, 9)], 'blocks'], [[note(56, 0.1, 9), note(76, 0.1, 9), note(77, 0.1, 9)], 'kit']]) {
+    const r = await render('nes', (s) => s.playHit(notes, 0.05, 'drums', 'nes', obj), 0.8);
+    assert.equal(r.nan, 0);
+    assert.ok(r.rms > 0.002 && r.peak <= 1.0, `${obj}: rms ${r.rms.toFixed(4)} peak ${r.peak.toFixed(2)}`);
+  }
+  // the blocks kit really swaps the sound (a different signal from the standard kit's snare)
+  const kit = await render('nes', (s) => s.playHit([note(38, 0.1, 9)], 0.05, 'drums', 'nes', 'kit'), 0.4);
+  const blocks = await render('nes', (s) => s.playHit([note(38, 0.1, 9)], 0.05, 'drums', 'nes', 'blocks'), 0.4);
+  assert.ok(Math.abs(kit.rms - blocks.rms) > 1e-4);
+});
 

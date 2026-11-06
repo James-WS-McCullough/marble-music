@@ -105,4 +105,13 @@ test('pad shapes shrink with scale and drums/keys map from notes', () => {
   assert.equal(padType('drums', [{ midi: 38 }]), 'snare');
   assert.equal(padType('drums', [{ midi: 42 }]), 'hat');
   assert.equal(padType('drums', [{ midi: 49 }]), 'crash');
+  // the woodblocks & cowbells kit, and real cowbell / woodblock notes
+  assert.equal(padType('drums', [{ midi: 38 }], 'blocks'), 'woodblock');
+  assert.equal(padType('drums', [{ midi: 45 }], 'blocks'), 'woodblock');
+  assert.equal(padType('drums', [{ midi: 42 }], 'blocks'), 'cowbell');
+  assert.equal(padType('drums', [{ midi: 36 }, { midi: 42 }], 'blocks'), 'kick', 'kicks stay');
+  assert.equal(padType('drums', [{ midi: 56 }]), 'cowbell');
+  assert.equal(padType('drums', [{ midi: 76 }]), 'woodblock');
+  // pitched objects follow the object chosen for the hit
+  for (const obj of ['button', 'tube', 'bamboo', 'bottle', 'neon', 'bell']) assert.equal(padType('keys', [{ midi: 60 }], obj), obj);
 });

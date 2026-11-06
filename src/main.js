@@ -5,7 +5,7 @@ import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
-import { planCourse, marbleAt, padShape, MARBLE_R, TUBE_R, rehydratePlan } from './planner.js';
+import { planCourse, marbleAt, padShape, MARBLE_R, TUBE_R, WALL_MOUNTED, rehydratePlan } from './planner.js';
 import { cameraPose, cameraPlacement } from './camera.js';
 import { THEMES } from './themes.js';
 import { buildSong, generateSong, groupNotes, splitParts, assignObjects } from './music.js';
@@ -82,6 +82,7 @@ const LANE_THEMES = [
     body: std({ color: 0x7a4a2a, roughness: 0.6 }) },
 ];
 const themeOf = (lane) => LANE_THEMES[Math.min(lane.k, LANE_THEMES.length - 1)];
+const clampN = (x, a, b) => Math.max(a, Math.min(b, x));
 const SHARED = new Set([...Object.values(MAT), ...Object.values(MARBLE_MATS)]);
 for (const t of LANE_THEMES) for (const m of [t.rail, t.bracket, t.body]) SHARED.add(m);
 
@@ -94,6 +95,40 @@ function rodBetween(a, b, r, mat) {
   return m;
 }
 const bracket = (x, y, z, mat = MAT.bracket) => rodBetween(new THREE.Vector3(x, y, z), new THREE.Vector3(x, y, 0), 0.007, mat);
+
+/** Wood grain for the wooden tubes (lengthwise streaks, mapped around the tube). */
+const WOOD_TEX = (() => {
+  const c = document.createElement('canvas');
+  c.width = 128; c.height = 256;
+  const g = c.getContext('2d'), rng = mulberry32(21);
+  g.fillStyle = '#c08a55'; g.fillRect(0, 0, 128, 256);
+  for (let i = 0; i < 60; i++) {
+    g.strokeStyle = `rgba(${rng() < 0.5 ? '90,50,20' : '230,190,140'},${0.08 + rng() * 0.15})`;
+    g.lineWidth = 1 + rng() * 3;
+    const x = rng() * 128;
+    g.beginPath(); g.moveTo(x, 0); g.bezierCurveTo(x + (rng() - 0.5) * 20, 90, x + (rng() - 0.5) * 20, 170, x + (rng() - 0.5) * 10, 256); g.stroke();
+  }
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  return t;
+})();
+/** Bamboo skin: yellow-green with fine lengthwise streaks. */
+const BAMBOO_TEX = (() => {
+  const c = document.createElement('canvas');
+  c.width = 128; c.height = 128;
+  const g = c.getContext('2d'), rng = mulberry32(33);
+  g.fillStyle = '#ffffff'; g.fillRect(0, 0, 128, 128);
+  for (let i = 0; i < 70; i++) {
+    g.fillStyle = `rgba(${rng() < 0.6 ? '120,130,40' : '255,255,220'},${0.05 + rng() * 0.12})`;
+    g.fillRect(rng() * 128, 0, 1 + rng() * 2, 128);
+  }
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  return t;
+})();
+/** Bamboo colour: greener for low notes, yellower for high ones. */
+const bambooTint = (midi) => new THREE.Color().setHSL(0.2 + Math.max(-0.03, Math.min(0.03, (60 - midi) / 500)), 0.55, 0.42);
 
 let theme = THEMES.sky;
 /** Lighting and background for the current theme (the scene is rebuilt separately). */
@@ -131,7 +166,127 @@ function padMesh(hit, lane) {
   const flashMats = [];
   const pitched = hit.notes.filter((nt) => nt.ch !== 9).sort((a, b) => a.midi - b.midi);
 
-  if (hit.type === 'button') {
+  if (hit.type === 'bamboo') {
+    // a bamboo tube sticking straight out of the wall, with nodes along it and a pale cut end;
+    // the marble bounces off its rounded side
+    const r = thick / 2, L = lane.z + 0.08;
+    const skin = std({ map: BAMBOO_TEX, color: bambooTint(hit.midi), roughness: 0.45, metalness: 0.05, side: THREE.DoubleSide });
+    const tube = new THREE.Mesh(new THREE.CylinderGeometry(r, r, L, 28, 1, true), skin);
+    tube.rotation.x = Math.PI / 2;
+    tube.position.z = -L / 2 + 0.08; // from the wall (z = -lane.z here) to just past the marble
+    tube.castShadow = tube.receiveShadow = true;
+    group.add(tube);
+    const nodeMat = std({ color: bambooTint(hit.midi).multiplyScalar(0.6), roughness: 0.5 });
+    for (let z = 0.08 - 0.2; z > 0.08 - L + 0.05; z -= 0.24) { // the raised rings of the nodes
+      const node = new THREE.Mesh(new THREE.TorusGeometry(r * 1.0, r * 0.07, 6, 28), nodeMat);
+      node.position.z = z;
+      group.add(node);
+    }
+    const rimMat = std({ color: 0xe8dcb0, roughness: 0.8, emissive: 0xfff0b0, emissiveIntensity: 0 });
+    const rim = new THREE.Mesh(new THREE.RingGeometry(r * 0.8, r, 28), rimMat); // the pale cut end
+    rim.position.z = 0.0801;
+    const hole = new THREE.Mesh(new THREE.CircleGeometry(r * 0.8, 28), std({ color: 0x2a2410, roughness: 1 }));
+    hole.position.z = 0.079;
+    group.add(rim, hole);
+    flashMats.push(rimMat);
+    group.userData.bamboo = true;
+    group.position.set(center.x, center.y, lane.z);
+    group.userData = { ...group.userData, t: hit.t, base: group.position.clone(), n, mats: flashMats, baseQ: group.quaternion.clone() };
+    return group;
+  }
+  if (hit.type === 'bottle') {
+    // a glass bottle lying along the surface, part-filled with coloured water (more water = lower)
+    const c = pitchColor(hit.midi), r = thick / 2, bodyL = len * 0.65, neckL = len * 0.22;
+    const body = new THREE.Mesh(new THREE.CylinderGeometry(r, r, bodyL, 24), MAT.glass);
+    body.rotation.z = Math.PI / 2; body.position.x = -len / 2 + bodyL / 2;
+    const shoulder = new THREE.Mesh(new THREE.CylinderGeometry(r * 0.3, r, len * 0.13, 24), MAT.glass);
+    shoulder.rotation.z = -Math.PI / 2; shoulder.position.x = -len / 2 + bodyL + len * 0.065;
+    const neck = new THREE.Mesh(new THREE.CylinderGeometry(r * 0.3, r * 0.3, neckL, 16), MAT.glass);
+    neck.rotation.z = Math.PI / 2; neck.position.x = len / 2 - neckL / 2;
+    const lip = new THREE.Mesh(new THREE.TorusGeometry(r * 0.32, 0.004, 6, 16), MAT.glass);
+    lip.rotation.y = Math.PI / 2; lip.position.x = len / 2;
+    // the water: a circular segment (flat top) along the body, kept level as the bottle tilts
+    const fill = clampN(0.85 - (hit.midi - 48) / 48, 0.2, 0.85);
+    const ri = r * 0.88, h = 2 * ri * fill, a = Math.acos(1 - h / ri) ; // half-angle of the segment
+    const shape = new THREE.Shape();
+    shape.absarc(0, 0, ri, -Math.PI / 2 - a, -Math.PI / 2 + a, false);
+    shape.closePath();
+    // (solid, not transparent: the glass's transmission only shows solid things through it)
+    const waterMat = std({ color: c, roughness: 0.15, metalness: 0, emissive: c, emissiveIntensity: 0.1 });
+    const water = new THREE.Mesh(new THREE.ExtrudeGeometry(shape, { depth: bodyL * 0.94, bevelEnabled: false, curveSegments: 16 }), waterMat);
+    water.rotation.y = Math.PI / 2; // extrude along the bottle's axis
+    water.position.x = -len / 2 + bodyL * 0.03;
+    const waterPivot = new THREE.Group();
+    waterPivot.add(water);
+    // "down" in the bottle's cross-section is along -n (or +n for an underside pad): roll the
+    // water so its flat surface is level
+    waterPivot.rotation.x = n.y >= 0 ? 0 : Math.PI;
+    for (const m of [body, shoulder, neck]) m.renderOrder = 2;
+    group.add(waterPivot, body, shoulder, neck, lip);
+    group.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(t, n, new THREE.Vector3(0, 0, 1)));
+    flashMats.push(waterMat);
+    group.userData.bottle = { waterPivot, rest: waterPivot.rotation.x };
+  } else if (hit.type === 'neon') {
+    // a neon light tube: glows softly all the time, flares when hit
+    const c = pitchColor(hit.midi), r = thick / 2;
+    // a deep colour at a modest glow keeps its hue (very bright emissive tone-maps to white)
+    const hue = new THREE.Color().setHSL((hit.midi % 12) / 12, 1, 0.42);
+    const glowMat = std({ color: hue, emissive: hue, emissiveIntensity: 0.75, roughness: 0.2 });
+    const tube = new THREE.Mesh(new THREE.CapsuleGeometry(r * 0.7, len - r * 1.4, 6, 16), glowMat);
+    tube.rotation.z = Math.PI / 2;
+    const sleeve = new THREE.Mesh(new THREE.CylinderGeometry(r, r, len * 0.96, 20, 1, true), MAT.glass);
+    sleeve.rotation.z = Math.PI / 2; sleeve.renderOrder = 2;
+    const capMat = std({ color: 0x3a3d44, metalness: 0.8, roughness: 0.35 });
+    for (const sx of [-1, 1]) {
+      const cap = new THREE.Mesh(new THREE.CylinderGeometry(r * 1.1, r * 1.1, 0.03, 16), capMat);
+      cap.rotation.z = Math.PI / 2; cap.position.x = sx * (len / 2 - 0.015);
+      group.add(cap);
+    }
+    group.add(tube, sleeve);
+    group.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(t, n, new THREE.Vector3(0, 0, 1)));
+    group.userData.neon = { glowMat };
+  } else if (hit.type === 'bell') {
+    // a brass handbell on its side (mouth one way, wooden handle the other), struck on its flank
+    const r = thick / 2, bellL = len * 0.55;
+    // profile from the crown (a rounded dome) down a gently widening waist to a flared lip
+    const pts = [];
+    for (let i = 0; i <= 6; i++) { const a = (i / 6) * Math.PI / 2; pts.push(new THREE.Vector2(r * 0.6 * Math.sin(a), bellL / 2 - r * 0.35 * (1 - Math.cos(a)))); }
+    const top = bellL / 2 - r * 0.35;
+    for (let i = 1; i <= 10; i++) { const u = i / 10; pts.push(new THREE.Vector2(r * (0.6 + 0.22 * u + (u > 0.75 ? 0.18 * ((u - 0.75) / 0.25) ** 1.5 : 0)), top - u * (top + bellL / 2))); }
+    pts.reverse(); // lathe goes mouth (-) to crown (+)
+    const brass = std({ color: 0xd8a640, metalness: 1, roughness: 0.22, emissive: 0xffd27a, emissiveIntensity: 0, side: THREE.DoubleSide });
+    const bell = new THREE.Mesh(new THREE.LatheGeometry(pts, 28), brass);
+    bell.rotation.z = Math.PI / 2; // axis along the surface; the mouth (wide end) towards -t
+    bell.position.x = -len / 2 + bellL / 2;
+    const handle = new THREE.Mesh(new THREE.CylinderGeometry(0.014, 0.017, len - bellL, 12), std({ color: 0x5a3416, roughness: 0.6 }));
+    handle.rotation.z = Math.PI / 2; handle.position.x = len / 2 - (len - bellL) / 2;
+    bell.castShadow = handle.castShadow = true;
+    group.add(bell, handle);
+    group.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(t, n, new THREE.Vector3(0, 0, 1)));
+    flashMats.push(brass);
+    group.userData.swing = true;
+  } else if (hit.type === 'woodblock') {
+    const blockMat = std({ map: WOOD_TEX, color: 0xb8743f, roughness: 0.55, emissive: 0xffa060, emissiveIntensity: 0 });
+    const block = new THREE.Mesh(new THREE.BoxGeometry(len, thick, 0.09), blockMat);
+    const slit = new THREE.Mesh(new THREE.BoxGeometry(len * 0.8, thick * 0.12, 0.092), std({ color: 0x1e120a, roughness: 1 }));
+    slit.position.y = -thick * 0.15;
+    block.castShadow = block.receiveShadow = true;
+    group.add(block, slit);
+    group.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(t, n, new THREE.Vector3(0, 0, 1)));
+    flashMats.push(blockMat);
+  } else if (hit.type === 'cowbell') {
+    // a squarish bell (a frustum with four sides), mouth towards -t
+    const iron = std({ color: 0x5b5f66, metalness: 0.9, roughness: 0.35, emissive: 0xfff2c0, emissiveIntensity: 0 });
+    const bellG = new THREE.CylinderGeometry(thick * 0.32, thick * 0.62, len, 4, 1, true);
+    const cow = new THREE.Mesh(bellG, iron);
+    cow.material.side = THREE.DoubleSide;
+    cow.rotation.set(0, Math.PI / 4, Math.PI / 2);
+    cow.castShadow = true;
+    group.add(cow);
+    group.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(t, n, new THREE.Vector3(0, 0, 1)));
+    flashMats.push(iron);
+    group.userData.swing = true;
+  } else   if (hit.type === 'button') {
     // an arcade button: black bezel, coloured cap that presses in and flashes when hit
     const c = pitchColor(hit.midi);
     const bezel = new THREE.Mesh(new THREE.CylinderGeometry(len / 2, len / 2 * 1.05, thick * 0.5, 32), std({ color: 0x15171c, roughness: 0.35, metalness: 0.3 }));
@@ -342,7 +497,7 @@ function buildScene() {
     for (const h of lane.hits) {
       const m = padMesh(h, lane);
       const c = m.userData.base.clone().addScaledVector(m.userData.n, -padShape(h.type, h.midi, h.scale).thick / 2);
-      world.add(bracket(c.x, c.y, lane.z - 0.02, themeOf(lane).bracket));
+      if (!WALL_MOUNTED.has(h.type)) world.add(bracket(c.x, c.y, lane.z - 0.02, themeOf(lane).bracket));
       world.add(m);
       pads.push(m);
     }
@@ -402,7 +557,8 @@ async function loadSong() {
     truncated ||= g.truncated;
     return { ...p, groups: g.groups };
   });
-  assignObjects(parts, { mode: $('objects').value, seed, bpm: song.bpm || 120, bar: song.bar || 4 }); // keys / buttons / tubes by song section
+  // what each marble hits: chosen per marble, or mixed by song section
+  assignObjects(parts, { melody: $('melodyObj').value, harmony: $('harmonyObj').value, drums: $('drumKit').value, seed, bpm: song.bpm || 120, bar: song.bar || 4 });
   // if a song is already planning, restart the worker so the new request doesn't queue behind it
   if ($('planning').classList.contains('on') && worker) { worker.terminate(); worker = null; }
   const myId = planId + 1;
@@ -450,7 +606,7 @@ function pumpAudio() {
 
 // ?t=12.5 freezes the preview at that loop time (handy for screenshots); ?cam=, ?song=, ?seed=
 const params = new URLSearchParams(location.search);
-for (const k of ['cam', 'song', 'seed', 'second', 'font', 'pace', 'theme', 'objects']) if (params.get(k)) $(k).value = params.get(k);
+for (const k of ['cam', 'song', 'seed', 'second', 'font', 'pace', 'theme', 'melodyObj', 'harmonyObj', 'drumKit']) if (params.get(k)) $(k).value = params.get(k);
 if (params.has('shot')) for (const id of ['start', 'panel', 'toggle']) $(id).style.display = 'none';
 
 function currentTau() {
@@ -491,14 +647,25 @@ function frame() {
     const dh = tau - u.t;
     const on = dh >= 0 && dh < 0.8;
     const f = on ? Math.exp(-dh * 8) : 0;
-    for (const m of u.mats) m.emissiveIntensity = f * (u.tube ? 1.2 : 0.5);
-    // a struck pad dips slightly
-    p.position.copy(u.base).addScaledVector(u.n, on ? -Math.exp(-dh * 20) * 0.012 : 0);
+    for (const m of u.mats) m.emissiveIntensity = f * (u.tube ? 1.2 : u.bamboo ? 1.4 : 0.5);
+    // a struck pad dips slightly (a wall-mounted tube doesn't move)
+    if (!u.bamboo) p.position.copy(u.base).addScaledVector(u.n, on ? -Math.exp(-dh * 20) * 0.012 : 0);
     if (u.button) { // the cap presses in and the button flashes bright (bloom picks it up)
       const fl = on ? Math.exp(-dh * 6) : 0;
       u.button.capMat.emissiveIntensity = 0.15 + 3.5 * fl;
       u.button.ringMat.emissiveIntensity = 0.2 + 2.5 * fl;
       u.button.cap.position.y = padShape('button', 0).thick / 4 - (on ? 0.012 * Math.exp(-dh * 25) : 0);
+    }
+    if (u.neon) { // idles at a soft glow, flares (with a flicker) when hit
+      const fl = on ? Math.exp(-dh * 5) : 0;
+      u.neon.glowMat.emissiveIntensity = 0.75 + 2.2 * fl * (0.85 + 0.15 * Math.sin(dh * 90));
+    }
+    if (u.bottle) { // the water sloshes
+      u.bottle.waterPivot.rotation.x = u.bottle.rest + (on ? 0.35 * Math.exp(-dh * 4) * Math.sin(dh * 16) : 0);
+    }
+    if (u.swing) { // bells swing on their mounting
+      const w = on ? 0.12 * Math.exp(-dh * 2.5) * Math.sin(dh * 12) : 0;
+      p.quaternion.copy(u.baseQ).premultiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), w));
     }
     if (u.tube) { // the struck tube wobbles a little
       const w = on ? 0.07 * Math.exp(-dh * 3) * Math.sin(dh * 22) : 0;
@@ -551,7 +718,9 @@ $('font').addEventListener('change', () => synth && (synth.font = $('font').valu
 $('theme').addEventListener('change', () => { applyTheme(); if (plan) buildScene(); });
 $('second').addEventListener('change', loadSong);
 $('pace').addEventListener('change', loadSong);
-$('objects').addEventListener('change', loadSong);
+$('melodyObj').addEventListener('change', loadSong);
+$('harmonyObj').addEventListener('change', loadSong);
+$('drumKit').addEventListener('change', loadSong);
 $('play').addEventListener('click', async () => {
   if (!synth) return;
   if (playing) await synth.ctx.suspend();
