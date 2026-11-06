@@ -53,10 +53,16 @@ export function clipReport(plan, { tol = 0.004 } = {}) {
   for (const lane of lanes) {
     const bodies = lane.hits.map(padBody);
     const tracks = lane.rails.map((r) => ({ rail: r, segs: trackSegs(r) }));
+    // the start/end pipe stubs are solid too
+    for (const st of lane.stubs || []) {
+      const hx = Math.cos(st.angle) * st.len / 2, hy = Math.sin(st.angle) * st.len / 2;
+      tracks.push({ rail: { kind: 'stub' }, segs: [{ a: { x: st.x - hx, y: st.y - hy }, b: { x: st.x + hx, y: st.y + hy }, r: TUBE_R }] });
+    }
     const front = lanes.filter((l) => l.k < lane.k);
     const frontBrackets = front.flatMap((l) => [
       ...l.hits.map((h) => padBody(h).bracket),
       ...l.rails.flatMap((r) => r.brackets || []),
+      ...(l.stubs || []).map((st) => st.bracket),
     ]);
     // pad vs pad (same lane)
     for (let i = 0; i < bodies.length; i++) for (let j = i + 1; j < bodies.length; j++) {

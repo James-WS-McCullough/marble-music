@@ -213,10 +213,21 @@ export class Synth {
    * All the notes of one pad hit. In the melody lane the top note is the lead and the rest are
    * a chord (which a font may play its own way, e.g. NES arpeggios); drums go by channel 10.
    */
-  playHit(notes, time, role = 'lead', font = this.font) {
+  playHit(notes, time, role = 'lead', font = this.font, obj = null) {
     const pitched = notes.filter((n) => n.ch !== 9);
     for (const d of notes) if (d.ch === 9) this.play(d, time, role, font);
     if (!pitched.length) return;
+    // arcade buttons and chime tubes have their own sound, whatever the font
+    if (obj === 'button' || obj === 'tube') {
+      const top = pitched.reduce((a, n) => (n.midi > a.midi ? n : a));
+      for (const n of pitched) {
+        const r = role === 'lead' && n !== top ? 'chord' : role;
+        const dur = clamp(n.dur ?? 0.3, 0.06, 2.0), vel = n.vel ?? 0.8;
+        if (obj === 'button') this.note_arcade(n.midi, vel, time, dur, r);
+        else this.note_tube(n.midi, vel, time, dur, r);
+      }
+      return;
+    }
     if (role !== 'lead') { for (const n of pitched) this.play(n, time, role, font); return; }
     const top = pitched.reduce((a, n) => (n.midi > a.midi ? n : a));
     this.play(top, time, 'lead', font);
@@ -484,6 +495,58 @@ export class Synth {
         tone.frequency.exponentialRampToValueAtTime(140, t + 0.08);
       }
     }
+  }
+
+  // ---------------------------------------------------------------- arcade buttons & chime tubes
+  /** An arcade button: two detuned square waves with a quick pitch "blip" and a filter sweep. */
+  note_arcade(midi, vel, t, dur, role) {
+    const ctx = this.ctx, f = mtof(midi), v = 0.6 + 0.4 * vel;
+    const amp = (role === 'chord' ? 0.035 : role === 'bass' ? 0.08 : 0.06) * v;
+    const len = Math.max(0.12, Math.min(dur, 0.6));
+    const g = this.voice({ echo: 0.3 });
+    const lp = ctx.createBiquadFilter();
+    lp.type = 'lowpass'; lp.Q.value = 6;
+    lp.frequency.setValueAtTime(7000, t);
+    lp.frequency.exponentialRampToValueAtTime(1800, t + 0.18);
+    lp.connect(g);
+    for (const det of [-9, 9]) {
+      const o = ctx.createOscillator();
+      o.type = 'square';
+      o.detune.value = det;
+      o.frequency.setValueAtTime(f * 2, t); // the blip: an octave up, dropping into the note
+      o.frequency.exponentialRampToValueAtTime(f, t + 0.035);
+      o.connect(lp);
+      o.start(t);
+      o.stop(t + len + 0.1);
+    }
+    g.gain.setValueAtTime(0, t);
+    g.gain.linearRampToValueAtTime(amp, t + 0.003);
+    g.gain.setTargetAtTime(amp * 0.6, t + 0.01, 0.05);
+    g.gain.setValueAtTime(amp * 0.6, t + len);
+    g.gain.linearRampToValueAtTime(0, t + len + 0.06);
+  }
+
+  /** A chime tube (tubular bell): long-ringing inharmonic partials and a metallic strike. */
+  note_tube(midi, vel, t, dur, role) {
+    const f = mtof(midi), a = 0.2 * vel * (role === 'chord' ? 0.6 : 1);
+    const bus = this.ctx.createGain();
+    bus.connect(this.out);
+    const send = this.ctx.createGain();
+    send.gain.value = 0.55;
+    bus.connect(send).connect(this.revIn);
+    this.partial(bus, f, a, 3.6, t);
+    this.partial(bus, f * 1.0018, a * 0.35, 3.2, t); // a slow shimmer (beating)
+    this.partial(bus, f * 2.76, a * 0.3, 2.0, t);
+    this.partial(bus, f * 5.4, a * 0.14, 1.0, t);
+    this.partial(bus, f * 8.93, a * 0.06, 0.4, t);
+    const src = this.ctx.createBufferSource(), hp = this.ctx.createBiquadFilter(), sg = this.ctx.createGain();
+    src.buffer = this.white;
+    hp.type = 'highpass'; hp.frequency.value = 5000;
+    sg.gain.setValueAtTime(a * 0.5, t);
+    sg.gain.exponentialRampToValueAtTime(0.0001, t + 0.03);
+    src.connect(hp).connect(sg).connect(bus);
+    src.start(t);
+    src.stop(t + 0.05);
   }
 
   // ---------------------------------------------------------------- original instruments

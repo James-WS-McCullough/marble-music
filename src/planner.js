@@ -65,7 +65,11 @@ const SNARES = new Set([37, 38, 39, 40]);
 const HATS = new Set([42, 44, 46]);
 export const CYMBALS = new Set([42, 44, 46, 49, 51, 52, 53, 55, 57, 59]);
 
-export function padType(style, notes) {
+/**
+ * What a hit's pad is. Drums follow their notes; pitched parts are keys/bars by default, or
+ * whatever object the song's object plan chose for that hit (`obj`: key, bar, button, tube).
+ */
+export function padType(style, notes, obj = null) {
   if (style === 'drums' || style === 'cymbals') {
     const ms = notes.map((n) => n.midi);
     if (ms.some((m) => KICKS.has(m))) return 'kick';
@@ -74,6 +78,7 @@ export function padType(style, notes) {
     if (ms.some((m) => HATS.has(m))) return 'hat';
     return 'crash';
   }
+  if (obj) return obj;
   return { keys: 'key', bars: 'bar', chimes: 'chime' }[style] || 'key';
 }
 
@@ -94,6 +99,8 @@ function padShapeFull(type, midi) {
     case 'crash': return { len: 0.28, thick: 0.02 };
     case 'bar': return { len: clamp(0.42 - (midi - 28) * 0.005, 0.22, 0.42), thick: 0.055 };
     case 'chime': return { len: clamp(0.3 - (midi - 60) * 0.004, 0.14, 0.3), thick: 0.03 };
+    case 'button': return { len: 0.17, thick: 0.055 }; // an arcade button: round cap in a bezel
+    case 'tube': return { len: clamp(0.42 - (midi - 48) * 0.006, 0.2, 0.42), thick: 0.045 }; // a chime tube (lower = longer)
     default: return { len: clamp(0.32 - (midi - 48) * 0.004, 0.16, 0.32), thick: 0.05 };
   }
 }
@@ -479,7 +486,7 @@ export function planCourse(parts, options = {}) {
   const BEAM = opt.beam ?? 10, PER_NODE = opt.perNode ?? 4, WINDOW = opt.window ?? 20;
   const A = opt.routeW / 2;
   const half = A + 0.9; // pads stay within [-half, half]
-  const liftX = A + 1.4;
+  const liftX = A + 1.4; // (right-hand limit for where start rails end)
   const g0 = Math.min(...parts.map((p) => p.groups[0].t));
   const speedMax = opt.speedMax ?? 0.44 * opt.vMax; // the route must leave room to bounce around it
   const flightMax = Math.min(opt.flightMax, (0.85 * 2 * opt.vMax) / G);
@@ -521,7 +528,11 @@ export function planCourse(parts, options = {}) {
   const S = gridFn(Sgrid), Dx = gridFn(Dgrid);
   const sinA = Math.sin(opt.routeAngle), cosA = Math.cos(opt.routeAngle);
   const speed = S(span) / Math.max(1, span), descent = speed * sinA;
-  opt.lift = Math.max(opt.lift, (sinA * S(span) + Dx(span) + 3) / 12); // the lift never whips the marble up
+  // The loop seam: each marble rolls out of a short pipe stub at its start and into an identical
+  // stub at its end. The first marble's two stubs sit in identical, reserved "seam frames" (same
+  // rails in and out, nothing else), so the last frame of the video matches the first exactly.
+  const SEAM = { w: 4.8, h: 3.4, stubLen: 0.36, rail: 3.2, margin: 0.35, shadow: 0.8, launch: 0.09 };
+  const slopeT = opt.topSlope;
 
   // x bounces between -A and A (a triangle wave), y descends; starts near the lift heading left
   const tri = (u) => { const m = (((u + A) % (4 * A)) + 4 * A) % (4 * A); return m < 2 * A ? m - A : 3 * A - m; };
@@ -537,7 +548,18 @@ export function planCourse(parts, options = {}) {
     const w = lead.weight(t);
     if (!w) return { x: xr, y: yr };
     const q = lead.at(t);
-    return { x: (1 - w) * xr + w * q.x, y: (1 - w) * yr + w * (q.y - drop) };
+    return avoidSeams({ x: (1 - w) * xr + w * q.x, y: (1 - w) * yr + w * (q.y - drop) });
+  };
+  // The lanes behind steer around the reserved seam frames (instead of discovering them late):
+  // a target inside one moves to just outside its nearer side.
+  let seamBoxes = [];
+  const avoidSeams = (p) => {
+    for (const b of seamBoxes) {
+      if (p.x <= b.x0 - 0.4 || p.x >= b.x1 + 0.4 || p.y <= b.y0 - 0.4 || p.y >= b.y1 + 0.4) continue;
+      const opts = [{ x: b.x0 - 0.5, y: p.y }, { x: b.x1 + 0.5, y: p.y }, { x: p.x, y: b.y0 - 0.5 }];
+      return opts.reduce((a, c) => (Math.hypot(c.x - p.x, c.y - p.y) < Math.hypot(a.x - p.x, a.y - p.y) ? c : a));
+    }
+    return p;
   };
 
   // ---------------------------------------------------------------- obstacle queries
@@ -571,21 +593,60 @@ export function planCourse(parts, options = {}) {
     segs: [], hits: [], rails: [],
   }));
 
-  // ---------------------------------------------------------------- intro (lift -> top ramp -> drop)
-  const buildIntro = (lane, y) => {
-    const path = new Path({ x: liftX, y }, Math.PI + opt.topSlope);
-    path.line((liftX - lane.xStart) / Math.cos(opt.topSlope));
-    const roll = rollRail(path, 0.4, { drag: opt.rampDrag });
+  // ---------------------------------------------------------------- intro (stub -> start rail -> drop)
+  // The path starts at the stub's centre; the rail is drawn from its mouth (s0 = stubLen / 2).
+  // The first marble's start rail runs out of the seam frame before it drops onto the first note.
+  const introLen = (k, rail = 0.9) => SEAM.stubLen / 2 + (k === 0 ? SEAM.rail : rail);
+  const buildIntro = (lane, y, rail) => {
+    const L = introLen(lane.k, rail), sx = lane.xStart + L * Math.cos(slopeT);
+    const path = new Path({ x: sx, y }, Math.PI + slopeT);
+    path.line(L);
+    const roll = rollRail(path, 0.3, { drag: opt.rampDrag });
     const tDrop = 0.18;
-    return { path, roll, tDrop, P0: flightPos(roll.end, roll.v, tDrop), vin0: flightVel(roll.v, tDrop), time: roll.duration + tDrop };
+    return { path, roll, tDrop, P0: flightPos(roll.end, roll.v, tDrop), vin0: flightVel(roll.v, tDrop), time: roll.duration + tDrop,
+      stub: { x: sx, y, angle: Math.PI + slopeT } };
   };
-  offset = opt.lift + 0.3; // provisional (the intro time barely depends on the start position)
+  const minLaunch = (k) => (k === 0 ? SEAM.launch : 0.3); // time hidden in the start stub
   for (const lane of lanes) {
     lane.xStart = clamp(xRoute(offset + lane.groups[0].t - g0), -A, liftX - 0.5);
     lane.introTime = buildIntro(lane, 0).time;
   }
-  offset = opt.lift + 0.3 + Math.max(0, ...lanes.map((l) => l.introTime - (l.groups[0].t - g0)));
+  offset = Math.max(...lanes.map((l) => minLaunch(l.k) + l.introTime - (l.groups[0].t - g0)));
   const timeOf = (t) => offset + (t - g0);
+
+  // the seam frames: reserved boxes nothing else may enter (pads, track, brackets, other lanes)
+  const seamBox = (c) => ({ x0: c.x - SEAM.w / 2 - SEAM.margin, x1: c.x + SEAM.w / 2 + SEAM.margin,
+    y0: c.y - SEAM.h / 2 - SEAM.margin, y1: c.y + SEAM.h / 2 + SEAM.margin + SEAM.shadow });
+  const reserve = (b) => {
+    const out = [];
+    for (let y = b.y0; y <= b.y1 + 1e-9; y += 0.3) out.push({ k: -1, own: false, reserved: true, x1: b.x0, y1: y, x2: b.x1, y2: y, r: 0.18 });
+    grid.push(...out);
+  };
+  const inBox = (b, x, y, pad = 0) => x > b.x0 - pad && x < b.x1 + pad && y > b.y0 - pad && y < b.y1 + pad;
+  const stubObstacle = (k, st) => {
+    const hx = Math.cos(st.angle) * SEAM.stubLen / 2, hy = Math.sin(st.angle) * SEAM.stubLen / 2;
+    return { k, own: true, x1: st.x - hx, y1: st.y - hy, x2: st.x + hx, y2: st.y + hy, r: TUBE_R };
+  };
+  /** A stub hangs from one bracket under its middle (running back to the wall like all brackets). */
+  const stubBracket = (st) => {
+    const c = Math.cos(st.angle), sn = Math.sin(st.angle);
+    const n = c >= 0 ? { x: sn, y: -c } : { x: -sn, y: c }; // the side below the pipe
+    return { x: st.x + n.x * (TUBE_R + 0.01), y: st.y + n.y * (TUBE_R + 0.01) };
+  };
+  const stubObstacles = (k, st) => { const b = stubBracket(st); return [stubObstacle(k, st), { k, own: false, bracket: true, x1: b.x, y1: b.y, x2: b.x, y2: b.y, r: 0.012 }]; };
+  /** A decorative rail continuing straight out of a stub (so both seam frames look the same). */
+  const decoRail = (k, st, angle) => {
+    const path = new Path({ x: st.x, y: st.y }, angle);
+    path.line(SEAM.stubLen / 2 + SEAM.rail);
+    const obs = railObstacles(k, path, path.len, false, SEAM.stubLen / 2);
+    return { rail: { path, s0: SEAM.stubLen / 2, sEnd: path.len, kind: 'deco', brackets: obs.brackets }, obs };
+  };
+  // the first marble's start is known now: reserve its seam frame before anything is planned
+  lanes[0].xStart = clamp(xRoute(timeOf(lanes[0].groups[0].t)), -A, liftX - 0.5);
+  const seamTop = buildIntro(lanes[0], target(0, timeOf(lanes[0].groups[0].t)).y - buildIntro(lanes[0], 0).P0.y).stub;
+  const boxTop = seamBox(seamTop);
+  reserve(boxTop);
+  let seamBottom = null, boxBottom = null;
 
   // ---------------------------------------------------------------- plan each lane (front first)
   // If a lane still needs a compromise (the lane in front fixed things exactly where it needed
@@ -610,7 +671,13 @@ export function planCourse(parts, options = {}) {
     }
     lane.dropScale = best.scale;
     dropScale = 1;
-    if (lane.k === 0) lead = smoothPath(lane);
+    if (lane.k === 0) {
+      lead = smoothPath(lane);
+      seamBottom = lane.stubIn;
+      boxBottom = lane.box || seamBox(seamBottom);
+      reserve(boxBottom);
+      seamBoxes = [boxTop, boxBottom];
+    }
   }
 
   function smoothPath(lane) {
@@ -643,43 +710,54 @@ export function planCourse(parts, options = {}) {
     }
     const hitBase = (i) => {
       const notes = lane.groups[i].notes, pitched = notes.filter((n) => n.ch !== 9);
-      return { t: T[i], notes, type: padType(lane.style, notes), scale: scaleOf(i), midi: pitched.length ? Math.max(...pitched.map((n) => n.midi)) : 60 };
+      return { t: T[i], notes, type: padType(lane.style, notes, lane.groups[i].obj), scale: scaleOf(i), midi: pitched.length ? Math.max(...pitched.map((n) => n.midi)) : 60 };
     };
 
     // ---- starting candidates (a lane starting later leaves its lift part-way down)
     const roots = [];
     {
-      const x0 = clamp(xRoute(T[0]), -A, liftX - 0.5);
+      const x0 = k === 0 ? lanes[0].xStart : clamp(xRoute(T[0]), -A, liftX - 0.5);
       lane.xStart = x0;
       const y0 = target(k, T[0]).y - buildIntro(lane, 0).P0.y;
       const far = { x: 1e9, y: 1e9 }, w = new World(grid, null);
       const clear = (it) => {
+        if (w.some(it.stub.x, it.stub.y, 0.4, (o) => !o.path && rel(o) && segDist(stubObstacle(k, it.stub), o) < TUBE_R + o.r + 0.01)) return false;
         for (let s = 0; s <= it.roll.sEnd; s += 0.03) { const q = it.path.at(s); if (solidHit(w, rel, { x: q.x + q.nx * MARBLE_R, y: q.y + q.ny * MARBLE_R }, far, 0.02) || solidHit(w, rel, q, far, 0.01)) return false; }
         for (let j = 1; j <= 20; j++) if (solidHit(w, rel, flightPos(it.roll.end, it.roll.v, (j / 20) * it.tDrop), far, 0.01)) return false;
         return true;
       };
-      for (const dy of [0, 0.2, -0.2, 0.4, -0.4, 0.6, -0.6, 0.9, -0.9, 1.2, -1.2, 1.6, -1.6]) {
-        for (const dx of [0, -0.3, 0.3, -0.6, 0.6, -1, 1, -1.4, 1.4]) {
+      // every clear start position within reach, then a well-spread selection of them (nearest
+      // first): if the area near the target is boxed in, some candidates start somewhere else
+      const clearStarts = [];
+      // (a later-starting marble's start rail may be longer, so its stub can sit clear of the
+      // busy area the first marble is passing through, while it rolls in to the right spot)
+      for (const rail of k === 0 ? [0.9] : [0.9, 1.6, 2.4])
+      for (const dy of [0, 0.2, -0.2, 0.4, -0.4, 0.6, -0.6, 0.9, -0.9, 1.2, -1.2, 1.6, -1.6, 2.1, -2.1]) {
+        for (const dx of [0, -0.3, 0.3, -0.6, 0.6, -1, 1, -1.4, 1.4, -1.9, 1.9]) {
           lane.xStart = clamp(x0 + dx, -half, liftX - 0.5);
-          const it = buildIntro(lane, y0 + dy);
-          if (T[0] - it.time < opt.lift + 0.1) continue; // must leave the lift first
+          const it = buildIntro(lane, y0 + dy, rail);
+          if (T[0] - it.time < minLaunch(k) - 1e-9) continue; // must leave its stub after the loop starts
           if (k > 0 && !clear(it)) continue;
-          roots.push(makeRoot(it, { x: lane.xStart, y: y0 + dy }, 0.5 * Math.abs(dy) + 0.3 * Math.abs(dx)));
-          if (roots.length >= (k === 0 ? 1 : 16)) break;
+          clearStarts.push({ it, at: { x: lane.xStart, y: y0 + dy }, cost: 0.5 * Math.abs(dy) + 0.3 * Math.abs(dx) + 0.2 * (rail - 0.9) });
+          if (k === 0) break;
         }
-        if (roots.length >= (k === 0 ? 1 : 16)) break;
+        if (k === 0 && clearStarts.length) break;
       }
+      clearStarts.sort((a, b) => a.cost - b.cost);
+      for (const c of clearStarts.slice(0, k === 0 ? 1 : 16)) roots.push(makeRoot(c.it, c.at, c.cost));
       if (!roots.length) { lane.xStart = x0; roots.push(makeRoot(buildIntro(lane, y0), { x: x0, y: y0 }, 0)); }
     }
     function makeRoot(it, at, cost) {
       const launch = T[0] - it.time;
-      const top = railObstacles(k, it.path, it.roll.sEnd);
-      const obs = [...top, ...pathObstacles(k, it.roll.end, it.roll.v, it.tDrop, -1)];
+      const top = railObstacles(k, it.path, it.roll.sEnd, false, SEAM.stubLen / 2);
+      const obs = [...top, ...stubObstacles(k, it.stub), ...pathObstacles(k, it.roll.end, it.roll.v, it.tDrop, -1)];
+      const rails = [{ path: it.path, s0: SEAM.stubLen / 2, sEnd: it.roll.sEnd, kind: 'top', brackets: top.brackets }];
+      if (k === 0) { const d = decoRail(k, it.stub, slopeT); rails.push(d.rail); obs.push(...d.obs); } // the "rail in" of the seam frame
       return { depth: 0, P: it.P0, vin: it.vin0, dir: -1, cost, parent: null, committed: false, obs, bbox: bboxOf(obs),
-        segs: [{ type: 'rail', t0: launch, t1: launch + it.roll.duration, xs: it.roll.xs, ys: it.roll.ys },
+        segs: [{ type: 'hidden', t0: 0, t1: launch, p: { x: it.stub.x, y: it.stub.y } },
+          { type: 'rail', t0: launch, t1: launch + it.roll.duration, xs: it.roll.xs, ys: it.roll.ys },
           { type: 'flight', t0: launch + it.roll.duration, t1: T[0], p: it.roll.end, v: it.roll.v }],
-        rails: [{ path: it.path, sEnd: it.roll.sEnd, kind: 'top', brackets: top.brackets }],
-        start: { xStart: at.x, yTop: at.y, intro: it, launch } };
+        rails, start: { xStart: at.x, yTop: at.y, intro: it, launch, stubOut: it.stub } };
     }
 
     // ---- beam search over the notes
@@ -689,7 +767,7 @@ export function planCourse(parts, options = {}) {
       lane.segs.push(...n.segs);
       lane.rails.push(...n.rails);
       if (n.hit) lane.hits.push(n.hit);
-      if (n.start) Object.assign(lane, { xStart: n.start.xStart, yTop: n.start.yTop, intro: n.start.intro, launch: n.start.launch });
+      if (n.start) Object.assign(lane, { xStart: n.start.xStart, yTop: n.start.yTop, intro: n.start.intro, launch: n.start.launch, stubOut: n.start.stubOut });
       if (n.end) Object.assign(lane, n.end);
       n.committed = true;
       committedDepth = n.depth;
@@ -716,6 +794,7 @@ export function planCourse(parts, options = {}) {
     let beam = select(history[0], BEAM), wideUntil = -1, wideMul = 3;
     const rewound = [];
     for (let d = 0; d <= N - 1;) {
+      if (opt.onProgress && d % 4 === 0) opt.onProgress({ lane: k, lanes: lanes.length, name: lane.name, done: d / N });
       const width = d <= wideUntil ? BEAM * wideMul : BEAM;
       let kids = [];
       for (const node of beam) kids.push(...expand(node, false, 1));
@@ -837,13 +916,17 @@ export function planCourse(parts, options = {}) {
         }
         obs.push(...pathObstacles(k, node.P, kick, t1, i), ...pathObstacles(k, r.end, r.v, tEx, i));
       } else if (o.kind === 'outro') {
-        const { tf, gp, r } = o;
+        const { tf, gp, r, stub, box } = o;
         segs.push({ type: 'flight', t0: hit.t, t1: hit.t + tf, p: node.P, v: o.vout });
         segs.push({ type: 'rail', t0: hit.t + tf, t1: hit.t + tf + r.duration, xs: r.xs, ys: r.ys });
-        const gObs = railObstacles(k, gp, r.sEnd);
-        rails.push({ path: gp, sEnd: r.sEnd, kind: 'gutter', brackets: gObs.brackets });
-        obs.push(...pathObstacles(k, node.P, o.vout, tf, i), ...gObs);
-        n.end = { arrive: hit.t + tf + r.duration, base: r.end };
+        // brackets measured outwards from the stub, exactly like the start's "rail in"
+        const back = new Path({ x: stub.x, y: stub.y }, slopeT);
+        back.line(gp.len);
+        const gObs = railObstacles(k, back, back.len, false, SEAM.stubLen / 2);
+        rails.push({ path: gp, s0: 0, sEnd: gp.len - SEAM.stubLen / 2, kind: 'gutter', brackets: gObs.brackets });
+        obs.push(...pathObstacles(k, node.P, o.vout, tf, i), ...gObs, ...stubObstacles(k, stub));
+        if (k === 0) { const d = decoRail(k, stub, Math.PI + slopeT); rails.push(d.rail); obs.push(...d.obs); } // the "rail out"
+        n.end = { arrive: hit.t + tf + r.duration, base: { x: stub.x, y: stub.y }, stubIn: stub, box };
       } else {
         segs.push({ type: 'flight', t0: T[i], t1: T[i + 1], p: node.P, v: o.vout });
         obs.push(...pathObstacles(k, node.P, o.vout, T[i + 1] - T[i], i));
@@ -1026,21 +1109,25 @@ export function planCourse(parts, options = {}) {
       return out;
     }
 
-    // ---- the last pad throws the marble into the gutter that rolls to the lift
+    // ---- the last pad throws the marble onto a gutter that rolls (left) into its end stub. For
+    // the first marble the stub's surroundings must match the start's seam frame exactly.
     function outroOptions(node, w, hit, soft) {
       const P = node.P, vin = node.vin;
       let yMin = P.y;
       for (let n = node; n; n = n.parent) if (n.hit) yMin = Math.min(yMin, n.hit.pos.y);
       for (const h of lane.hits) yMin = Math.min(yMin, h.pos.y);
       const lim = opt.maxGain * Math.hypot(vin.x, vin.y) * 0.99;
+      const dir = { x: -Math.cos(slopeT), y: -Math.sin(slopeT) };
       const out = [];
+      // (the first marble's gutter may be longer, so its end seam frame can sit out of the way of
+      // the lanes behind)
+      for (const Lg of k === 0 ? [SEAM.rail + 0.4, SEAM.rail + 1.8, SEAM.rail + 3.3].map((L) => SEAM.stubLen / 2 + L) : [SEAM.stubLen / 2 + 1.2])
       for (const yDrop of [0, 0.25, 0.5, 0.8, 1.2, 1.7, 2.3]) {
         const yG = yMin - 0.7 - yDrop;
         for (const vy0 of [1.0, 1.6, 0.5, 2.2, 0.0, 0.25, -0.3])
           for (const vxw of [0.7, -0.7, 1.2, -1.2, 0.3, -0.3, 0.15, -0.15]) {
-            let vy = vy0;
+            let vy = vy0, vx = vxw;
             let tf = (vy + Math.sqrt(vy * vy + 2 * G * (P.y - yG))) / G;
-            let vx = Math.min(vxw, (liftX - 0.7 - P.x) / tf);
             const sp0 = Math.hypot(vx, vy);
             if (sp0 > lim) { vx *= lim / sp0; vy *= lim / sp0; tf = (vy + Math.sqrt(vy * vy + 2 * G * (P.y - yG))) / G; } // never a launch
             const v = { x: vx, y: vy };
@@ -1050,44 +1137,110 @@ export function planCourse(parts, options = {}) {
             const incidence = -(vin.x * nx + vin.y * ny) / nl / Math.hypot(vin.x, vin.y);
             const real = departure >= 0.3 && incidence >= 0.3; // head-on, leaving away from the pad
             if (!real && !soft) continue;
-            let cost = Math.abs(vy - 1) * 0.2 + Math.abs(vx - 0.7) * 0.2 + yDrop, pen = real ? 0 : 30;
+            let cost = Math.abs(vy - 1) * 0.2 + Math.abs(Math.abs(vx) - 0.7) * 0.2 + yDrop + 0.3 * (Lg - SEAM.rail - 0.58), pen = real ? 0 : 30;
             if (pen) cost += 20;
             if (out.length && cost >= out[0].cost) continue;
+            const land = flightPos(P, v, tf);
+            const stub = { x: land.x + dir.x * Lg, y: land.y + dir.y * Lg, angle: Math.PI + slopeT };
             const own = padSeg(P, { x: nx / nl, y: ny / nl }, hit.type, hit.midi, hit.scale);
             let clips = !padClear(own, w, rel, i0(node), P) || bodyHits(own, w, rel);
-            for (let j = 1; j < 60 && !clips; j++) {
+            for (let j = 1; j <= 60 && !clips; j++) {
               const q = flightPos(P, v, (j / 60) * tf);
               if (distSeg(q.x, q.y, own) < MARBLE_R + own.r + 0.002 || solidHit(w, rel, q, P, 0.01)) clips = true;
             }
-            const land = flightPos(P, v, tf), gp = new Path(land, -opt.gutterSlope);
-            gp.line((liftX - land.x) / Math.cos(opt.gutterSlope));
-            for (let s2 = 0; s2 <= gp.len && !clips; s2 += 0.03) { const q = gp.at(s2); if (solidHit(w, rel, { x: q.x + q.nx * MARBLE_R, y: q.y + q.ny * MARBLE_R }, P, 0.02) || solidHit(w, rel, q, P, 0.004)) clips = true; }
+            const gp = new Path(land, Math.PI + slopeT);
+            gp.line(Lg);
+            for (let s2 = 0; s2 <= gp.len - SEAM.stubLen / 2 && !clips; s2 += 0.03) { const q = gp.at(s2); if (solidHit(w, rel, { x: q.x + q.nx * MARBLE_R, y: q.y + q.ny * MARBLE_R }, P, 0.02) || solidHit(w, rel, q, P, 0.004)) clips = true; }
+            if (!clips && w.some(stub.x, stub.y, 0.4, (o) => !o.path && rel(o) && segDist(stubObstacle(k, stub), o) < TUBE_R + o.r + 0.01)) clips = true;
+            let box = null;
+            if (!clips && k === 0) {
+              // the end seam frame must hold nothing but the stub and its rails: check the box
+              box = seamBox(stub);
+              if ([own.x1, own.x2].some((x, j) => inBox(box, x, j ? own.y2 : own.y1, own.r))) clips = true;
+              for (let x = box.x0; x <= box.x1 && !clips; x += 0.2)
+                for (let y = box.y0; y <= box.y1 && !clips; y += 0.2)
+                  if (w.some(x, y, 0.3, (o) => !o.path && o.k >= 0 && distSeg(x, y, o) < 0.15 + o.r)) clips = true;
+              if (!clips && inBox(boxTop, stub.x, stub.y, SEAM.w)) clips = true; // keep the two seams apart
+              // leave room for the lanes behind: wherever they'll be playing (roughly a lane-gap below
+              // where we are at their note times), keep the reserved frame out of the way
+              if (!clips && parts.length > 1) {
+                const near = behindPts(node).filter((q) => inBox(box, q.x, q.y, 0.6)).length;
+                cost += 4 * near;
+              }
+            }
             if (clips) { if (!soft) continue; cost += 100; pen = 100; }
-            // drops into the gutter and settles before rolling to the lift
-            const r = landAndRoll(gp, flightVel(v, tf), { drag: opt.rampDrag * 0.5 }) || rollRail(gp, Math.max(0.4, vx), { drag: opt.rampDrag * 0.5 });
+            // drops onto the gutter, settles, and rolls into the stub
+            const r = landAndRoll(gp, flightVel(v, tf), { drag: opt.rampDrag * 0.5 }) || rollRail(gp, Math.max(0.4, Math.abs(vx)), { drag: opt.rampDrag * 0.5 });
             out.length = 0;
-            out.push({ kind: 'outro', cost, pen, vout: v, tf, gp, r });
+            out.push({ kind: 'outro', cost, pen, vout: v, tf, gp, r, stub, box });
           }
-        if (out.length && !out[0].pen) break;
+        if (out.length && !out[0].pen && out[0].cost < 2) break;
       }
       return out;
     }
     function i0(node) { return node.depth - 1; }
+
+    /** Where the lanes behind will roughly be at their note times (lane 0 only; cached per node). */
+    function behindPts(node) {
+      if (node._behind) return node._behind;
+      const hits = [...lane.hits];
+      const chain = [];
+      for (let n = node; n && !n.committed; n = n.parent) if (n.hit) chain.push(n.hit);
+      hits.push(...chain.reverse());
+      const at = (t) => { let lo = 0, hi = hits.length - 1; while (lo < hi) { const m = (lo + hi + 1) >> 1; if (hits[m].t <= t) lo = m; else hi = m - 1; } return hits[lo].pos; };
+      const out = [];
+      parts.forEach((p, kk) => {
+        if (kk === 0) return;
+        let last = -Infinity;
+        for (const g of p.groups) {
+          const t = timeOf(g.t);
+          if (t - last < 0.25) continue;
+          last = t;
+          const q = at(t);
+          out.push({ x: q.x, y: q.y - kk * opt.laneDrop });
+        }
+      });
+      return (node._behind = out);
+    }
   }
 
-  // ---------------------------------------------------------------- loop closure: hold, lift, hold
-  const D = Math.max(...lanes.map((l) => l.arrive)) + 0.4;
+  // ---------------------------------------------------------------- loop closure
+  // The loop ends just after the first marble disappears into its end stub (the same moment
+  // before it appears from its start stub). Every other marble is tucked into its own end stub
+  // well before that, so the seam frame is identical at both ends.
+  const D = Math.max(lanes[0].arrive, ...lanes.slice(1).map((l) => l.arrive + 1.6)) + SEAM.launch;
   for (const lane of lanes) {
-    const top = { x: liftX, y: lane.yTop };
-    lane.segs.push({ type: 'hold', t0: lane.arrive, t1: D, p: lane.base });
-    lane.segs.push({ type: 'lift', t0: 0, t1: opt.lift, p0: lane.base, p1: top });
-    lane.segs.push({ type: 'hold', t0: opt.lift, t1: lane.launch, p: top });
+    lane.segs.push({ type: 'hidden', t0: lane.arrive, t1: D, p: lane.base });
     lane.segs.sort((a, b) => a.t0 - b.t0);
-    lane.liftX = liftX;
+    lane.stubs = [{ ...lane.stubOut, role: 'out' }, { ...lane.stubIn, role: 'in' }].map((st) => ({ ...st, len: SEAM.stubLen, bracket: stubBracket(st) }));
   }
+  const pts = lanes.flatMap((l) => [...l.hits.map((h) => h.pos), ...l.stubs, ...l.rails.flatMap((r) => [r.path.at(r.s0 || 0), r.path.at(r.sEnd)])]);
+  const bounds = { x0: Math.min(...pts.map((p) => p.x)), x1: Math.max(...pts.map((p) => p.x)), y0: Math.min(...pts.map((p) => p.y)), y1: Math.max(...pts.map((p) => p.y)) };
+  for (const b of [boxTop, boxBottom]) { bounds.x0 = Math.min(bounds.x0, b.x0); bounds.x1 = Math.max(bounds.x1, b.x1); bounds.y0 = Math.min(bounds.y0, b.y0); bounds.y1 = Math.max(bounds.y1, b.y1); }
+  const seam = { top: { x: seamTop.x, y: seamTop.y }, bottom: { x: seamBottom.x, y: seamBottom.y }, angle: Math.PI + slopeT,
+    plate: { w: SEAM.w, h: SEAM.h }, boxTop, boxBottom, stubLen: SEAM.stubLen, rail: SEAM.rail };
 
-  return { lanes, D, offset, g0, liftX, half, opt, yTarget, target, xRoute, speed, descent,
-    yMin: Math.min(...lanes.map((l) => l.base.y)), yMax: Math.max(...lanes.map((l) => l.yTop)) };
+  return { lanes, D, offset, g0, half, opt, seam, bounds, speed, descent, yTarget, target, xRoute,
+    yMin: bounds.y0, yMax: bounds.y1 };
+}
+
+/**
+ * The plan as plain data for sending to another thread (structured clone): no functions, no
+ * planning-only scratch data. Paths become plain objects; rehydratePlan restores them.
+ */
+export function toPlain(plan) {
+  const { yTarget, target, xRoute, opt, ...rest } = plan;
+  const { onProgress, ...o } = opt;
+  return { ...rest, opt: o, lanes: plan.lanes.map(({ intro, starts, ...l }) => l) };
+}
+
+/**
+ * A plan that crossed a thread boundary (structured clone) has plain objects where Paths were:
+ * give them their methods back.
+ */
+export function rehydratePlan(plan) {
+  for (const lane of plan.lanes) for (const r of lane.rails) Object.setPrototypeOf(r.path, Path.prototype);
+  return plan;
 }
 
 /** Internal building blocks, exported for unit tests only. */

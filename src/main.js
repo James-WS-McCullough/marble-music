@@ -5,8 +5,10 @@ import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
-import { planCourse, marbleAt, padShape, lastHitIndex, MARBLE_R, TUBE_R } from './planner.js';
-import { buildSong, generateSong, groupNotes, splitParts } from './music.js';
+import { planCourse, marbleAt, padShape, MARBLE_R, TUBE_R, rehydratePlan } from './planner.js';
+import { cameraPose, cameraPlacement } from './camera.js';
+import { THEMES } from './themes.js';
+import { buildSong, generateSong, groupNotes, splitParts, assignObjects } from './music.js';
 import { parseMidi } from './midi.js';
 import { Synth } from './audio.js';
 import { mulberry32 } from './util.js';
@@ -23,9 +25,7 @@ renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 document.body.prepend(renderer.domElement);
 
-const WALL_COLOR = 0x4fb3c8;
 const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x5f9fb0);
 const pmrem = new THREE.PMREMGenerator(renderer);
 scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
 scene.environmentIntensity = 0.45;
@@ -36,7 +36,8 @@ const controls = new OrbitControls(camera, renderer.domElement);
 controls.enableDamping = true;
 controls.enabled = false;
 
-scene.add(new THREE.HemisphereLight(0xffffff, 0x5a8a98, 0.55));
+const hemi = new THREE.HemisphereLight(0xffffff, 0x5a8a98, 0.55);
+scene.add(hemi);
 const sun = new THREE.DirectionalLight(0xfff6e8, 1.9);
 sun.castShadow = true;
 sun.shadow.mapSize.set(2048, 2048);
@@ -59,11 +60,9 @@ const MAT = {
   bracket: std({ color: 0x9aa3ad, metalness: 0.8, roughness: 0.35 }),
   padBody: std({ color: 0x1f2a30, roughness: 0.55 }),
   barBody: std({ color: 0x5a3a26, roughness: 0.6 }),
-  pipe: std({ color: 0x3fae4a, roughness: 0.35, metalness: 0.05 }),
   // fully clear glass: real transmission (see-through, slight refraction) with just reflections showing its shape
   glass: new THREE.MeshPhysicalMaterial({ color: 0xffffff, transmission: 1, thickness: 0.01, ior: 1.45, roughness: 0,
     metalness: 0, clearcoat: 1, clearcoatRoughness: 0, specularIntensity: 1, side: THREE.DoubleSide }),
-  cloud: std({ color: 0xffffff, roughness: 1 }),
 };
 const MARBLE_MATS = {
   keys: std({ color: 0xe8ebf0, metalness: 1, roughness: 0.12 }),
@@ -96,85 +95,21 @@ function rodBetween(a, b, r, mat) {
 }
 const bracket = (x, y, z, mat = MAT.bracket) => rodBetween(new THREE.Vector3(x, y, z), new THREE.Vector3(x, y, 0), 0.007, mat);
 
-/** A plain painted wall: just a hint of texture so it doesn't look like flat CG. */
-function wallTexture() {
-  const c = document.createElement('canvas');
-  c.width = c.height = 256;
-  const g = c.getContext('2d');
-  g.fillStyle = '#ffffff';
-  g.fillRect(0, 0, 256, 256);
-  const rng = mulberry32(5);
-  for (let i = 0; i < 4000; i++) {
-    g.fillStyle = `rgba(${rng() < 0.5 ? '255,255,255' : '0,40,60'},${0.02 + rng() * 0.03})`;
-    g.fillRect(rng() * 256, rng() * 256, 1 + rng() * 2, 1 + rng() * 2);
-  }
-  const t = new THREE.CanvasTexture(c);
-  t.wrapS = t.wrapT = THREE.RepeatWrapping;
-  t.colorSpace = THREE.SRGBColorSpace;
-  return t;
-}
-const WALL_TEX = wallTexture();
-
-// 8x8 pixel-art sprites for the retro theme ('#' = filled)
-const SPRITES = {
-  star: ['...##...', '...##...', '########', '.######.', '..####..', '.##..##.', '##....##', '........'],
-  heart: ['.##..##.', '########', '########', '########', '.######.', '..####..', '...##...', '........'],
-  note: ['....###.', '....#.##', '....#..#', '....#...', '.####...', '#####...', '.###....', '........'],
-  gem: ['..####..', '.#....#.', '########', '.#.##.#.', '..#..#..', '...##...', '........', '........'],
-};
-const SPRITE_COLORS = [0xffd23f, 0xff6b6b, 0x7b6cff, 0x4cd964, 0xff9f43];
-const PIPE_COLORS = [0x3fae4a, 0xe0533d, 0xf2c230, 0x8e6cd8];
-
-function spriteMesh(name, color, px) {
-  const rows = SPRITES[name];
-  const cells = [];
-  rows.forEach((r, y) => [...r].forEach((ch, x) => ch === '#' && cells.push([x, 7 - y])));
-  const m = new THREE.InstancedMesh(new THREE.BoxGeometry(px * 0.94, px * 0.94, px * 0.6), std({ color, roughness: 0.6 }), cells.length);
-  const M = new THREE.Matrix4();
-  cells.forEach(([x, y], i) => m.setMatrixAt(i, M.makeTranslation((x - 3.5) * px, (y - 3.5) * px, 0)));
-  m.castShadow = true;
-  return m;
-}
-
-function cloudMesh(rng, size) {
-  const g = new THREE.Group();
-  const n = 4 + Math.floor(rng() * 3);
-  for (let i = 0; i < n; i++) {
-    const r = size * (0.32 + rng() * 0.25) * (i === 0 || i === n - 1 ? 0.75 : 1);
-    const b = new THREE.Mesh(new THREE.SphereGeometry(r, 16, 12), MAT.cloud);
-    b.position.set(((i / (n - 1)) - 0.5) * size * 1.5, (rng() - 0.3) * size * 0.25 + (i % 2) * size * 0.1, 0);
-    b.scale.z = 0.45;
-    b.castShadow = true;
-    g.add(b);
-  }
-  return g;
-}
-
-function pipeMesh(rng, color, len) {
-  const mat = std({ color, roughness: 0.35, metalness: 0.05 });
-  const a = rng() * Math.PI * 2, bend = (rng() - 0.5) * 1.6;
-  const p0 = new THREE.Vector3(0, 0, 0), p3 = new THREE.Vector3(Math.cos(a) * len, Math.sin(a) * len, 0);
-  const p1 = new THREE.Vector3(Math.cos(a + bend) * len * 0.45, Math.sin(a + bend) * len * 0.45, 0);
-  const p2 = p3.clone().add(new THREE.Vector3(Math.cos(a + Math.PI - bend) * len * 0.45, Math.sin(a + Math.PI - bend) * len * 0.45, 0));
-  const curve = new THREE.CubicBezierCurve3(p0, p1, p2, p3);
-  const g = new THREE.Group();
-  const tube = new THREE.Mesh(new THREE.TubeGeometry(curve, 40, 0.09, 16), mat);
-  tube.castShadow = true;
-  g.add(tube);
-  for (const u of [0, 1]) { // rims
-    const rim = new THREE.Mesh(new THREE.CylinderGeometry(0.11, 0.11, 0.07, 20), mat);
-    rim.position.copy(curve.getPoint(u));
-    rim.quaternion.setFromUnitVectors(UP, curve.getTangent(u));
-    rim.castShadow = true;
-    g.add(rim);
-  }
-  g.userData.points = curve.getPoints(20);
-  return g;
+let theme = THEMES.sky;
+/** Lighting and background for the current theme (the scene is rebuilt separately). */
+function applyTheme() {
+  theme = THEMES[$('theme').value] || THEMES.sky;
+  scene.background = new THREE.Color(theme.background);
+  scene.fog = theme.fog ? new THREE.Fog(...theme.fog) : null;
+  renderer.toneMappingExposure = theme.exposure;
+  scene.environmentIntensity = theme.env;
+  hemi.color.set(theme.hemi[0]); hemi.groundColor.set(theme.hemi[1]); hemi.intensity = theme.hemi[2];
+  sun.color.set(theme.sun[0]); sun.intensity = theme.sun[1];
 }
 
 // ------------------------------------------------------------------ state
 let synth = null, startTime = 0, playing = false;
-let plan = null, events = [], world = null, pads = [], marbles = [], sprites = [];
+let plan = null, events = [], world = null, pads = [], marbles = [], anims = [];
 let schedAbs = 0, currentSong = null, customMidi = null;
 
 function disposeWorld() {
@@ -196,7 +131,39 @@ function padMesh(hit, lane) {
   const flashMats = [];
   const pitched = hit.notes.filter((nt) => nt.ch !== 9).sort((a, b) => a.midi - b.midi);
 
-  if (hit.type === 'key' || hit.type === 'bar' || hit.type === 'chime') {
+  if (hit.type === 'button') {
+    // an arcade button: black bezel, coloured cap that presses in and flashes when hit
+    const c = pitchColor(hit.midi);
+    const bezel = new THREE.Mesh(new THREE.CylinderGeometry(len / 2, len / 2 * 1.05, thick * 0.5, 32), std({ color: 0x15171c, roughness: 0.35, metalness: 0.3 }));
+    bezel.position.y = -thick / 4;
+    const capMat = std({ color: c, roughness: 0.25, emissive: c, emissiveIntensity: 0.15 });
+    const cap = new THREE.Mesh(new THREE.CylinderGeometry(len * 0.38, len * 0.4, thick * 0.5, 32), capMat);
+    cap.position.y = thick / 4;
+    const ringMat = std({ color: 0x222222, emissive: c, emissiveIntensity: 0.2 });
+    const ring = new THREE.Mesh(new THREE.TorusGeometry(len * 0.44, 0.006, 8, 32), ringMat);
+    ring.rotation.x = Math.PI / 2;
+    ring.position.y = 0.002;
+    for (const m of [bezel, cap]) m.castShadow = m.receiveShadow = true;
+    group.add(bezel, cap, ring);
+    group.quaternion.setFromUnitVectors(UP, n);
+    group.userData.button = { cap, capMat, ringMat };
+  } else if (hit.type === 'tube') {
+    // a chime tube lying along the bounce surface, with a coloured band that shimmers when struck
+    const c = pitchColor(hit.midi);
+    const metal = std({ color: themeOf(lane).rail.color, metalness: 1, roughness: 0.18 });
+    const tube = new THREE.Mesh(new THREE.CylinderGeometry(thick / 2, thick / 2, len, 24), metal);
+    tube.rotation.z = Math.PI / 2; // axis along the pad's surface
+    tube.castShadow = true;
+    const bandMat = std({ color: c, roughness: 0.3, metalness: 0.4, emissive: c, emissiveIntensity: 0 });
+    const band = new THREE.Mesh(new THREE.CylinderGeometry(thick / 2 + 0.002, thick / 2 + 0.002, Math.min(0.05, len * 0.18), 24), bandMat);
+    band.rotation.z = Math.PI / 2;
+    const capGeo = new THREE.CylinderGeometry(thick / 2 + 0.003, thick / 2 + 0.003, 0.01, 24);
+    for (const sx of [-1, 1]) { const ec = new THREE.Mesh(capGeo, themeOf(lane).rail); ec.rotation.z = Math.PI / 2; ec.position.x = sx * len / 2; group.add(ec); }
+    group.add(tube, band);
+    group.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(t, n, new THREE.Vector3(0, 0, 1)));
+    flashMats.push(bandMat);
+    group.userData.tube = true;
+  } else if (hit.type === 'key' || hit.type === 'bar' || hit.type === 'chime') {
     // a chunky slab with a bright coloured top; a chord = several coloured strips side by side
     const keys = pitched.length ? pitched : [{ midi: hit.midi }];
     const W = 0.14, w = W / keys.length, cap = 0.014;
@@ -252,7 +219,7 @@ function padMesh(hit, lane) {
     group.quaternion.setFromUnitVectors(UP, n);
   }
   group.position.copy(center);
-  group.userData = { t: hit.t, base: center.clone(), n, mats: flashMats };
+  group.userData = { ...group.userData, t: hit.t, base: center.clone(), n, mats: flashMats, baseQ: group.quaternion.clone() };
   return group;
 }
 
@@ -291,15 +258,25 @@ function railMeshes(rail, lane) {
   }
   // support brackets exactly where the planner put them (it keeps the lanes behind clear of them)
   for (const q of rail.brackets || []) out.push(bracket(q.x, q.y, lane.z - (rail.tube ? 0 : 0.036), themeOf(lane).bracket));
-  if (rail.kind === 'gutter') {
-    // collector trough: a back plate so the catch reads as a channel
-    const p0 = path.at(0), p1 = path.at(sEnd);
-    const L = Math.hypot(p1.x - p0.x, p1.y - p0.y);
-    const plate = new THREE.Mesh(new THREE.BoxGeometry(L, 0.12, 0.01), std({ color: 0x6b4a2c, roughness: 0.7 }));
-    plate.position.set((p0.x + p1.x) / 2, (p0.y + p1.y) / 2, lane.z - 0.07);
-    plate.rotation.z = Math.atan2(p1.y - p0.y, p1.x - p0.x);
-    out.push(plate);
+  return out;
+}
+
+/** A short opaque pipe stub: the marble rolls out of one at its start and into one at its end. */
+function stubMeshes(st, lane, pipeMat) {
+  const out = [];
+  const dir = new THREE.Vector3(Math.cos(st.angle), Math.sin(st.angle), 0);
+  const tube = new THREE.Mesh(new THREE.CylinderGeometry(TUBE_R, TUBE_R, st.len, 24, 1, true), pipeMat);
+  tube.position.set(st.x, st.y, lane.z);
+  tube.quaternion.setFromUnitVectors(UP, dir);
+  tube.castShadow = true;
+  out.push(tube);
+  for (const sgn of [-1, 1]) { // rims at both mouths
+    const rim = new THREE.Mesh(new THREE.TorusGeometry(TUBE_R, 0.014, 8, 24), themeOf(lane).rail);
+    rim.position.set(st.x + dir.x * sgn * st.len / 2, st.y + dir.y * sgn * st.len / 2, lane.z);
+    rim.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), dir);
+    out.push(rim);
   }
+  out.push(bracket(st.bracket.x, st.bracket.y, lane.z, themeOf(lane).bracket));
   return out;
 }
 
@@ -309,22 +286,28 @@ function buildScene() {
   scene.add(world);
   pads = [];
   marbles = [];
-  sprites = [];
-  const { half, liftX } = plan;
-  const yTop = plan.yMax + 1.5, yBot = plan.yMin - 1.0;
-  const x0 = -half - 1.6, x1 = liftX + 1.2;
+  anims = [];
+  const b = plan.bounds;
+  const x0 = b.x0 - 1.5, x1 = b.x1 + 1.5, yBot = b.y0 - 1.5, yTop = b.y1 + 1.5;
 
-  // the wall: one plain painted colour
+  // the wall, in the theme's finish (texture world-aligned: one tile per 1.5 m)
   const wallW = x1 - x0, wallH = yTop - yBot;
-  const tex = WALL_TEX.clone();
-  tex.needsUpdate = true;
-  tex.repeat.set(wallW / 1.5, wallH / 1.5);
-  const wall = new THREE.Mesh(new THREE.PlaneGeometry(wallW, wallH), std({ color: WALL_COLOR, map: tex, roughness: 0.95 }));
+  const wm = theme.wall();
+  wm.map.repeat.set(wallW / 1.5, wallH / 1.5);
+  wm.map.offset.set((x0 / 1.5) % 1, (yBot / 1.5) % 1);
+  const wall = new THREE.Mesh(new THREE.PlaneGeometry(wallW, wallH), std(wm));
   wall.position.set((x0 + x1) / 2, (yTop + yBot) / 2, 0);
   wall.receiveShadow = true;
   world.add(wall);
 
-  // Where the course runs (pads, rails, flights): decorations must keep clear of it.
+  // the two seam signs behind the first marble's start and end stubs (identical: seamless loop)
+  for (const c of [plan.seam.top, plan.seam.bottom]) {
+    const sign = theme.sign(plan.seam.plate.w, plan.seam.plate.h, currentSong.name.replace(/ —.*/, ''));
+    sign.position.set(c.x, c.y, 0.011);
+    world.add(sign);
+  }
+
+  // Where the course runs (pads, rails, flights) and the seam frames: decorations keep clear.
   const CELL = 0.25, busy = new Set();
   const mark = (x, y, r) => {
     for (let ix = Math.floor((x - r) / CELL); ix <= Math.floor((x + r) / CELL); ix++)
@@ -338,13 +321,12 @@ function buildScene() {
   for (const lane of plan.lanes) {
     for (let t = 0; t < plan.D; t += 0.02) { const m = marbleAt(lane, t); mark(m.x, m.y, 0.15); }
     for (const h of lane.hits) mark(h.pos.x, h.pos.y, 0.25);
-    mark(liftX, (lane.yTop + lane.base.y) / 2, 0); // (lift is drawn below)
-    for (let y = lane.base.y; y < lane.yTop; y += CELL) mark(liftX, y, 0.3);
+    for (const st of lane.stubs) mark(st.x, st.y, 0.3);
   }
+  for (const bx of [plan.seam.boxTop, plan.seam.boxBottom])
+    for (let x = bx.x0; x <= bx.x1; x += CELL) for (let y = bx.y0; y <= bx.y1; y += CELL) mark(x, y, 0.3);
 
-  // decorations: clouds, a few chunky pipes, little pixel-art sprites that bob to the beat
   const rng = mulberry32(plan.opt.seed * 31 + 7);
-  const area = wallW * wallH;
   const place = (r, tries = 30) => {
     for (let k = 0; k < tries; k++) {
       const x = x0 + r + rng() * (wallW - 2 * r), y = yBot + r + rng() * (wallH - 2 * r);
@@ -352,38 +334,10 @@ function buildScene() {
     }
     return null;
   };
-  for (let i = 0; i < area / 5; i++) {
-    const size = 0.22 + rng() * 0.3, at = place(size * 0.9);
-    if (!at) continue;
-    const c = cloudMesh(rng, size);
-    c.position.set(at.x, at.y, 0.05);
-    world.add(c);
-  }
-  for (let i = 0; i < area / 16; i++) {
-    const len = 0.8 + rng() * 0.8;
-    const p = pipeMesh(rng, PIPE_COLORS[i % PIPE_COLORS.length], len);
-    for (let k = 0; k < 60; k++) {
-      const x = x0 + 0.3 + rng() * (wallW - 0.6), y = yBot + 0.3 + rng() * (wallH - 0.6);
-      if (p.userData.points.every((q) => free(x + q.x, y + q.y, 0.2))) {
-        p.userData.points.forEach((q) => mark(x + q.x, y + q.y, 0.45));
-        p.position.set(x, y, 0.1);
-        world.add(p);
-        break;
-      }
-    }
-  }
-  const names = Object.keys(SPRITES);
-  for (let i = 0; i < area / 6; i++) {
-    const at = place(0.2);
-    if (!at) continue;
-    const sp = spriteMesh(names[Math.floor(rng() * names.length)], SPRITE_COLORS[Math.floor(rng() * SPRITE_COLORS.length)], 0.04);
-    sp.position.set(at.x, at.y, 0.03);
-    sp.userData = { y: at.y, phase: rng() < 0.5 ? 0 : 0.5 };
-    world.add(sp);
-    sprites.push(sp);
-  }
+  anims = theme.decorate({ rng, area: wallW * wallH, place, free, mark, add: (m) => world.add(m), bounds: { x0, x1, y0: yBot, y1: yTop } });
 
   // lanes
+  const pipeMat = std({ color: theme.pipe, roughness: 0.35, metalness: 0.1 });
   for (const lane of plan.lanes) {
     for (const h of lane.hits) {
       const m = padMesh(h, lane);
@@ -393,18 +347,7 @@ function buildScene() {
       pads.push(m);
     }
     for (const r of lane.rails) world.add(...railMeshes(r, lane));
-    // lift: an opaque pipe the marble rides back up inside
-    const yb = lane.base.y - 0.12, yt = lane.yTop + 0.14;
-    const tube = new THREE.Mesh(new THREE.CylinderGeometry(0.085, 0.085, yt - yb, 24, 1, true), MAT.pipe);
-    tube.position.set(liftX, (yt + yb) / 2, lane.z);
-    tube.castShadow = true;
-    world.add(tube);
-    for (const y of [yb, yt]) {
-      const ring = new THREE.Mesh(new THREE.TorusGeometry(0.088, 0.014, 8, 24), themeOf(lane).rail);
-      ring.rotation.x = Math.PI / 2;
-      ring.position.set(liftX, y, lane.z);
-      world.add(ring, bracket(liftX, y, lane.z - 0.08, themeOf(lane).bracket));
-    }
+    for (const st of lane.stubs) world.add(...stubMeshes(st, lane, pipeMat));
     const marble = new THREE.Mesh(new THREE.SphereGeometry(MARBLE_R, 32, 24), themeOf(lane).marble);
     marble.castShadow = true;
     world.add(marble);
@@ -413,46 +356,83 @@ function buildScene() {
 }
 
 // ------------------------------------------------------------------ song loading
-function loadSong() {
-  $('info').textContent = 'Planning course…';
-  setTimeout(() => {
-    try {
-      loadSongNow();
-    } catch (e) {
-      $('info').textContent = `Error: ${e.message}`;
-      throw e;
+// Planning runs in a worker so the page stays responsive and the spinner can show progress.
+let worker = null, planId = 0;
+function showPlanning(text, frac) {
+  $('planning').classList.add('on');
+  $('planningText').textContent = text;
+  $('planningBar').style.width = `${Math.round(Math.min(1, Math.max(0, frac)) * 100)}%`;
+}
+function hidePlanning() { $('planning').classList.remove('on'); }
+
+function planInBackground(parts, options, onProgress) {
+  const id = ++planId;
+  return new Promise((resolve, reject) => {
+    const fallback = () => { // no worker (old browser / file://): plan here instead
+      try { resolve(planCourse(parts, options)); } catch (e) { reject(e); }
+    };
+    if (params.has('shot')) return fallback(); // screenshot mode: plan synchronously (deterministic capture)
+    if (!worker) {
+      try { worker = new Worker(new URL('./plan-worker.js', import.meta.url), { type: 'module' }); }
+      catch { worker = null; return fallback(); }
     }
-  }, 20);
+    const w = worker;
+    w.onmessage = (e) => {
+      if (e.data.id !== id) return; // an older request: ignore
+      if (e.data.progress) return onProgress(e.data.progress);
+      if (e.data.error) return reject(new Error(e.data.error));
+      resolve(rehydratePlan(e.data.plan));
+    };
+    w.onerror = (e) => { e.preventDefault?.(); worker.terminate(); worker = null; fallback(); };
+    w.postMessage({ id, parts, options });
+  });
 }
 
-function loadSongNow() {
+async function loadSong() {
   const key = $('song').value;
   const seed = parseInt($('seed').value, 10) || 0;
-  if (key === 'proc') currentSong = generateSong(seed);
-  else if (key === 'midi' && customMidi) currentSong = customMidi;
-  else currentSong = buildSong(key);
+  let song;
+  if (key === 'proc') song = generateSong(seed);
+  else if (key === 'midi' && customMidi) song = customMidi;
+  else song = buildSong(key);
   let truncated = false;
-  const split = splitParts(currentSong.notes, { second: $('second').value });
+  const split = splitParts(song.notes, { second: $('second').value });
   const parts = split.parts.map((p) => {
     const g = groupNotes(p.notes, { maxGroups: 500 });
     truncated ||= g.truncated;
     return { ...p, groups: g.groups };
   });
-  plan = planCourse(parts, { seed, vMax: parseFloat($('pace').value) || 2.3 });
+  assignObjects(parts, { mode: $('objects').value, seed }); // keys / buttons / tubes per phrase
+  // if a song is already planning, restart the worker so the new request doesn't queue behind it
+  if ($('planning').classList.contains('on') && worker) { worker.terminate(); worker = null; }
+  const myId = planId + 1;
+  showPlanning(`Planning ${song.name.replace(/ —.*/, '')}…`, 0);
+  let newPlan;
+  try {
+    newPlan = await planInBackground(parts, { seed, vMax: parseFloat($('pace').value) || 2.3 }, (p) =>
+      showPlanning(`Planning ${p.name.toLowerCase()} (${p.lane + 1} of ${p.lanes})…`, (p.lane + p.done) / p.lanes));
+  } catch (e) {
+    if (myId === planId) { hidePlanning(); $('info').textContent = `Error: ${e.message}`; }
+    throw e;
+  }
+  if (myId !== planId) return; // superseded by a newer request
+  plan = newPlan;
+  currentSong = song;
   // one event per pad hit; the synth splits it into lead / chord / drum voices
-  events = plan.lanes.flatMap((l) => l.groups.map((g) => ({ notes: g.notes, role: l.role, tau: plan.offset + g.t - plan.g0 })));
+  events = plan.lanes.flatMap((l) => l.groups.map((g) => ({ notes: g.notes, role: l.role, obj: g.obj, tau: plan.offset + g.t - plan.g0 })));
   events.sort((a, b) => a.tau - b.tau);
   buildScene();
+  hidePlanning();
   const laneInfo = plan.lanes.map((l) => `<span style="color:${themeOf(l).dot}">●</span> ${l.name} ${l.hits.length} (${themeOf(l).name} track)`).join(' &nbsp;');
   const muted = split.muted.length ? `<br><span style="color:#9aa0c0">${split.muted.length} drum notes muted — set Second marble to Percussion to hear them</span>` : '';
-  $('info').innerHTML = `<b style="color:#e8eaf6">${currentSong.name}</b><br>${laneInfo}<br>${plan.D.toFixed(1)}s loop · ${(plan.yMax - plan.yMin).toFixed(0)}m tall wall` + muted +
+  $('info').innerHTML = `<b style="color:#e8eaf6">${song.name}</b><br>${laneInfo}<br>${plan.D.toFixed(1)}s seamless loop · ${(plan.yMax - plan.yMin).toFixed(0)}m tall wall` + muted +
     (truncated ? '<br><span style="color:#ffb347">Song truncated to fit.</span>' : '');
   restart();
 }
 
 function restart() {
   if (!synth) return;
-  startTime = synth.ctx.currentTime + 0.1 - (plan.opt.lift - 0.4);
+  startTime = synth.ctx.currentTime + 0.1; // the loop starts at the seam
   schedAbs = synth.ctx.currentTime - startTime;
 }
 
@@ -463,30 +443,28 @@ function pumpAudio() {
   for (let li = Math.floor(from / plan.D); li * plan.D < until; li++)
     for (const e of events) {
       const a = li * plan.D + e.tau;
-      if (a >= from && a < until) synth.playHit(e.notes, startTime + a, e.role);
+      if (a >= from && a < until) synth.playHit(e.notes, startTime + a, e.role, synth.font, e.obj);
     }
   schedAbs = until;
 }
 
 // ?t=12.5 freezes the preview at that loop time (handy for screenshots); ?cam=, ?song=, ?seed=
 const params = new URLSearchParams(location.search);
-for (const k of ['cam', 'song', 'seed', 'second', 'font', 'pace']) if (params.get(k)) $(k).value = params.get(k);
+for (const k of ['cam', 'song', 'seed', 'second', 'font', 'pace', 'theme', 'objects']) if (params.get(k)) $(k).value = params.get(k);
 if (params.has('shot')) for (const id of ['start', 'panel', 'toggle']) $(id).style.display = 'none';
 
 function currentTau() {
-  if (!synth) return params.has('t') ? Math.min(parseFloat(params.get('t')), plan.D - 0.01) : plan.opt.lift - 0.4;
+  if (!synth) return params.has('t') ? Math.min(parseFloat(params.get('t')), plan.D - 1e-6) : 0;
   const t = synth.ctx.currentTime - startTime - synth.latency;
   return ((t % plan.D) + plan.D) % plan.D;
 }
 
 // ------------------------------------------------------------------ animation
-const focus = new THREE.Vector3(0, 0, 6);
-let lastTau = 0, lastFrame = performance.now(), camInit = false;
+let lastTau = 0, lastFrame = performance.now();
 
 function frame() {
   requestAnimationFrame(frame);
   const nowMs = performance.now();
-  const dtF = Math.min(0.1, (nowMs - lastFrame) / 1000);
   lastFrame = nowMs;
   if (!plan || !marbles.length) return;
   if (playing) pumpAudio();
@@ -494,22 +472,17 @@ function frame() {
   const dTau = tau - lastTau;
   lastTau = tau;
 
-  // marbles (rolling rotation from velocity)
-  let yLo = Infinity, yHi = -Infinity, xLo = Infinity, xHi = -Infinity;
+  // marbles (rolling rotation from velocity); hidden while inside a pipe stub
   plan.lanes.forEach((lane, i) => {
     const m = marbleAt(lane, tau);
     const mesh = marbles[i];
     mesh.position.set(m.x, m.y, lane.z);
+    mesh.visible = m.type !== 'hidden';
     if (dTau > 0 && dTau < 0.1) {
       const v = new THREE.Vector3(m.vx, m.vy, 0);
       const axis = new THREE.Vector3(0, 0, 1).cross(v).negate();
       if (axis.lengthSq() > 1e-8) mesh.quaternion.premultiply(new THREE.Quaternion().setFromAxisAngle(axis.normalize(), (v.length() * dTau) / MARBLE_R));
     }
-    // frame only marbles that are playing: a hit within the last 1 s or the next 1.5 s (a marble
-    // resting through a long gap in its part can wander off; it rejoins the shot before it plays)
-    const hi = lastHitIndex(lane, tau), hits = lane.hits;
-    const active = (hi >= 0 && tau - hits[hi].t < 1) || (hits[hi + 1] && hits[hi + 1].t - tau < 1.5);
-    if ((m.type === 'flight' || m.type === 'rail') && active) { yLo = Math.min(yLo, m.y); yHi = Math.max(yHi, m.y); xLo = Math.min(xLo, m.x); xHi = Math.max(xHi, m.x); }
   });
 
   // pads: short soft glow + a small dip when struck
@@ -518,40 +491,42 @@ function frame() {
     const dh = tau - u.t;
     const on = dh >= 0 && dh < 0.8;
     const f = on ? Math.exp(-dh * 8) : 0;
-    for (const m of u.mats) m.emissiveIntensity = f * 0.5;
+    for (const m of u.mats) m.emissiveIntensity = f * (u.tube ? 1.2 : 0.5);
     // a struck pad dips slightly
     p.position.copy(u.base).addScaledVector(u.n, on ? -Math.exp(-dh * 20) * 0.012 : 0);
+    if (u.button) { // the cap presses in and the button flashes bright (bloom picks it up)
+      const fl = on ? Math.exp(-dh * 6) : 0;
+      u.button.capMat.emissiveIntensity = 0.15 + 3.5 * fl;
+      u.button.ringMat.emissiveIntensity = 0.2 + 2.5 * fl;
+      u.button.cap.position.y = padShape('button', 0).thick / 4 - (on ? 0.012 * Math.exp(-dh * 25) : 0);
+    }
+    if (u.tube) { // the struck tube wobbles a little
+      const w = on ? 0.07 * Math.exp(-dh * 3) * Math.sin(dh * 22) : 0;
+      p.quaternion.copy(u.baseQ).premultiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), w));
+    }
   }
+  // decorations animate with loop time (so they're in the same state at both ends of the loop)
   const beat = (tau * (currentSong.bpm || 120)) / 60;
-  for (const s of sprites) s.position.y = s.userData.y + 0.025 * Math.abs(Math.sin(Math.PI * (beat + s.userData.phase)));
+  for (const a of anims) a(tau, beat);
 
-  // camera: close behind the marbles, zooming out only as far as needed to keep both in shot
+  // camera: a pure function of loop time (see camera.js), so the loop's ends match exactly
   const mode = $('cam').value;
   controls.enabled = mode === 'free';
-  const onCourse = yLo <= yHi;
-  const fx = onCourse ? (xLo + xHi) / 2 : marbles[0].position.x;
-  const fy = onCourse ? (yLo + yHi) / 2 : marbles[0].position.y;
-  const k = camInit ? 1 - Math.exp(-dtF * 2.5) : 1;
-  focus.x += (fx - focus.x) * k;
-  focus.y += (fy - focus.y) * k;
-  const needH = Math.max(2.5, (onCourse ? yHi - yLo : 0) + 1.5, ((onCourse ? xHi - xLo : 0) + 1.8) / camera.aspect);
-  const wantDist = needH / 2 / Math.tan((13 * Math.PI) / 180);
-  focus.z += (wantDist - focus.z) * (camInit ? 1 - Math.exp(-dtF * 1.2) : 1);
-  camInit = true;
+  const pose = cameraPose(plan, tau, camera.aspect);
   if (mode === 'follow') {
-    // a little above and to the side, so pads read as slabs and shadows fall on the wall
-    camera.position.set(focus.x + 0.25 * focus.z / 5, focus.y + 0.7 * focus.z / 5, focus.z);
-    camera.lookAt(focus.x, focus.y - 0.05, 0.3);
+    const { position: p, lookAt: l } = cameraPlacement(pose);
+    camera.position.set(p.x, p.y, p.z);
+    camera.lookAt(l.x, l.y, l.z);
   } else if (mode === 'overview') {
     const H = plan.yMax - plan.yMin + 2;
     const dist = H / 2 / Math.tan((13 * Math.PI) / 180) + 1;
-    const mid = (plan.yMax + plan.yMin) / 2;
+    const mid = (plan.yMax + plan.yMin) / 2, cx = (plan.bounds.x0 + plan.bounds.x1) / 2;
     const a = Math.sin(nowMs / 9000) * 0.35;
-    camera.position.lerp(new THREE.Vector3(0.4 + Math.sin(a) * dist, mid, Math.cos(a) * dist), k);
-    camera.lookAt(0.4, mid, 0);
+    camera.position.set(cx + Math.sin(a) * dist, mid, Math.cos(a) * dist);
+    camera.lookAt(cx, mid, 0);
   } else controls.update();
-  sun.position.set(focus.x - 1.2, focus.y + 4, 5);
-  sun.target.position.set(focus.x + 0.6, focus.y - 0.8, 0);
+  sun.position.set(pose.x - 1.2, pose.y + 4, 5);
+  sun.target.position.set(pose.x + 0.6, pose.y - 0.8, 0);
 
   composer.render();
 }
@@ -573,8 +548,10 @@ $('dice').addEventListener('click', () => {
   loadSong();
 });
 $('font').addEventListener('change', () => synth && (synth.font = $('font').value));
+$('theme').addEventListener('change', () => { applyTheme(); if (plan) buildScene(); });
 $('second').addEventListener('change', loadSong);
 $('pace').addEventListener('change', loadSong);
+$('objects').addEventListener('change', loadSong);
 $('play').addEventListener('click', async () => {
   if (!synth) return;
   if (playing) await synth.ctx.suspend();
@@ -607,7 +584,8 @@ $('export').addEventListener('click', () => {
       name: l.name, style: l.style, depth: l.z,
       hits: l.hits.map((h) => ({ t: r(h.t), type: h.type, position: [r(h.pos.x), r(h.pos.y), l.z], normal: [r(h.normal.x), r(h.normal.y), 0],
         notes: h.notes.map((n) => ({ midi: n.midi, vel: n.vel, ch: n.ch })) })),
-      rails: l.rails.map((rl) => ({ kind: rl.kind, length: r(rl.sEnd), pieces: rl.path.pieces })),
+      rails: l.rails.map((rl) => ({ kind: rl.kind, from: r(rl.s0 || 0), length: r(rl.sEnd), tube: !!rl.tube, pieces: rl.path.pieces })),
+      stubs: l.stubs.map((st) => ({ role: st.role, position: [r(st.x), r(st.y), l.z], angle: r(st.angle), length: st.len })),
     })),
   };
   const a = document.createElement('a');
@@ -628,5 +606,6 @@ addEventListener('resize', () => {
   composer.setSize(innerWidth, innerHeight);
 });
 
+applyTheme();
 loadSong();
 frame();

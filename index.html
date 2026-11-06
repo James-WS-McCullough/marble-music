@@ -28,6 +28,18 @@
     #start b { display: block; font-size: 28px; margin-bottom: 6px; }
     #toggle { position: fixed; top: 12px; right: 12px; }
     #panel.hidden { display: none; }
+    /* planning spinner */
+    #planning { position: fixed; inset: 0; display: none; place-items: center; background: rgba(5,6,12,.35);
+      backdrop-filter: blur(2px); pointer-events: none; z-index: 5; }
+    #planning.on { display: grid; }
+    #planning .box { background: var(--panel); padding: 18px 22px; border-radius: 14px; min-width: 260px; text-align: center;
+      box-shadow: 0 6px 24px rgba(0,0,0,.4); }
+    #planning .spinner { width: 34px; height: 34px; margin: 2px auto 12px; border-radius: 50%;
+      border: 4px solid rgba(255,255,255,.18); border-top-color: var(--accent); animation: spin .8s linear infinite; }
+    #planning .bar { height: 6px; border-radius: 3px; background: rgba(255,255,255,.12); overflow: hidden; margin-top: 10px; }
+    #planning .bar > div { height: 100%; width: 0; background: var(--accent); transition: width .2s; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    @media (prefers-reduced-motion: reduce) { #planning .spinner { animation-duration: 2.4s; } }
     @media (max-width: 600px) { #panel { width: auto; right: 12px; } }
   </style>
   <script type="importmap">
@@ -81,6 +93,19 @@
       <option value="3.0">Lively (max 3 m/s)</option>
       <option value="4.0">Fast (max 4 m/s, pads sparsest)</option>
     </select>
+    <label for="objects">Objects</label>
+    <select id="objects">
+      <option value="mix">Mix it up (keys, buttons, tubes)</option>
+      <option value="classic">Classic (keys &amp; bars)</option>
+      <option value="arcade">Arcade buttons</option>
+      <option value="chimes">Chime tubes</option>
+    </select>
+    <label for="theme">Theme</label>
+    <select id="theme">
+      <option value="sky">Sky</option>
+      <option value="spooky">Spooky</option>
+      <option value="lab">Lab</option>
+    </select>
     <label for="cam">Camera</label>
     <select id="cam">
       <option value="follow">Follow marble</option>
@@ -94,6 +119,9 @@
     <div id="info"></div>
   </div>
   <button id="toggle" title="Hide/show panel (H)">☰</button>
+  <div id="planning" role="status" aria-live="polite"><div class="box">
+    <div class="spinner"></div><div id="planningText">Planning course…</div><div class="bar"><div id="planningBar"></div></div>
+  </div></div>
   <div id="start"><div><b>▶ Click to start</b><span style="color:#9aa0c0">audio needs a click to begin</span></div></div>
   <script type="module" src="./src/main.js"></script>
 </body>

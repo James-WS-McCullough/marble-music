@@ -2,7 +2,7 @@
 // grouping into hits and splitting a song between the two marbles.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { noteToMidi, parseVoice, SONGS, buildSong, generateSong, groupNotes, splitParts } from '../src/music.js';
+import { noteToMidi, parseVoice, SONGS, buildSong, generateSong, groupNotes, splitParts, assignObjects } from '../src/music.js';
 
 test('note names map to MIDI numbers', () => {
   assert.equal(noteToMidi('C4'), 60);
@@ -89,3 +89,25 @@ test('splitting: auto picks percussion only when the song has drums; none = melo
   const none = splitParts(buildSong('ode').notes, { second: 'none' });
   assert.equal(none.parts.length, 1);
 });
+
+test('objects: modes choose what each hit is played on; the mix changes phrase by phrase', () => {
+  const make = () => splitParts(buildSong('ode').notes, { second: 'harmony' }).parts.map((p) => ({ ...p, groups: groupNotes(p.notes).groups }));
+  const kinds = (parts, k) => new Set(parts[k].groups.map((g) => g.obj));
+  assert.deepEqual([...kinds(assignObjects(make(), { mode: 'classic' }), 0)], ['key']);
+  assert.deepEqual([...kinds(assignObjects(make(), { mode: 'arcade' }), 0)], ['button']);
+  assert.deepEqual([...kinds(assignObjects(make(), { mode: 'chimes' }), 0)], ['tube']);
+  const mix = assignObjects(make(), { mode: 'mix', seed: 3 });
+  assert.ok(kinds(mix, 0).size >= 2, 'the melody gets variety');
+  assert.deepEqual([...kinds(mix, 1)], ['bar'], 'the bass stays on bars');
+  // a change only at a phrase boundary (gap >= 0.6 s) or after 8 hits
+  const g = mix[0].groups;
+  let run = 1;
+  for (let i = 1; i < g.length; i++) {
+    if (g[i].obj !== g[i - 1].obj) { assert.ok(g[i].t - g[i - 1].t >= 0.6 || run >= 8); run = 1; } else run++;
+  }
+  assert.deepEqual(assignObjects(make(), { mode: 'mix', seed: 3 })[0].groups.map((x) => x.obj), g.map((x) => x.obj), 'deterministic');
+  const drums = splitParts(generateSong(42).notes, { second: 'percussion' }).parts.map((p) => ({ ...p, groups: groupNotes(p.notes).groups }));
+  assignObjects(drums, { mode: 'mix', seed: 1 });
+  assert.ok(drums[1].groups.every((x) => x.obj === undefined), 'drums stay drums');
+});
+

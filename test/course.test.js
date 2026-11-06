@@ -2,8 +2,8 @@
 // procedural songs, awkward MIDI-shaped stress songs, and different paces.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { planCourse, marbleAt, padShape, lastHitIndex, MARBLE_R } from '../src/planner.js';
-import { buildSong, generateSong, groupNotes, splitParts, SONGS } from '../src/music.js';
+import { planCourse, marbleAt, padShape, lastHitIndex, MARBLE_R, toPlain, rehydratePlan } from '../src/planner.js';
+import { buildSong, generateSong, groupNotes, splitParts, assignObjects, SONGS } from '../src/music.js';
 import { stressSongs } from './stress-songs.js';
 import { clipReport } from './clip-check.js';
 
@@ -21,7 +21,7 @@ function planFor(song, second, vMax = 2.3) {
   if (!cache.has(key)) {
     const split = splitParts(song.notes, { second });
     if (split.second !== second) { cache.set(key, null); return null; }
-    const parts = split.parts.map((p) => ({ ...p, groups: groupNotes(p.notes).groups }));
+    const parts = assignObjects(split.parts.map((p) => ({ ...p, groups: groupNotes(p.notes).groups })), { mode: 'mix', seed: 7 });
     const t0 = Date.now();
     const plan = planCourse(parts, { seed: 7, vMax });
     cache.set(key, { plan, parts, ms: Date.now() - t0 });
@@ -39,6 +39,14 @@ for (const song of SONG_LIST) for (const second of ['harmony', 'percussion']) {
     if (!r) return t.skip('song has no drums for a percussion marble');
     const { plan, parts } = r;
 
+    await t.test('each pad is the object chosen for it (keys, bars, buttons, tubes, drums)', () => {
+      plan.lanes.forEach((lane, k) => lane.hits.forEach((h, i) => {
+        const obj = parts[k].groups[i].obj;
+        if (obj) assert.equal(h.type, obj);
+        else assert.ok(['kick', 'snare', 'tom', 'hat', 'crash'].includes(h.type));
+      }));
+    });
+
     await t.test('every note is played exactly once, at its moment', () => {
       plan.lanes.forEach((lane, k) => {
         const want = parts[k].notes.length;
@@ -52,7 +60,7 @@ for (const song of SONG_LIST) for (const second of ['harmony', 'percussion']) {
       });
     });
 
-    await t.test('the path is continuous, finite, and loops', () => {
+    await t.test('the path is continuous and finite within the loop', () => {
       for (const lane of plan.lanes) {
         let prev = marbleAt(lane, 0);
         for (let tt = 0; tt <= plan.D; tt += 0.002) {
@@ -61,9 +69,43 @@ for (const song of SONG_LIST) for (const second of ['harmony', 'percussion']) {
           assert.ok(Math.hypot(m.x - prev.x, m.y - prev.y) < 0.06, `${lane.name}: no jump at ${tt.toFixed(3)}`);
           prev = m;
         }
-        const a = marbleAt(lane, plan.D - 1e-9), b = marbleAt(lane, 0);
-        assert.ok(Math.hypot(a.x - b.x, a.y - b.y) < 1e-3, `${lane.name}: loop closes`);
       }
+    });
+
+    await t.test('seamless loop: the last frame matches the first', () => {
+      const { seam } = plan;
+      // every marble is hidden in a pipe stub at the loop point
+      for (const lane of plan.lanes) for (const tt of [0, plan.D - 1e-6]) {
+        const m = marbleAt(lane, tt);
+        assert.equal(m.type, 'hidden', `${lane.name} hidden at t=${tt.toFixed(2)}`);
+        const st = tt === 0 ? lane.stubs[0] : lane.stubs[1];
+        assert.ok(Math.hypot(m.x - st.x, m.y - st.y) < 1e-6, 'inside its stub');
+      }
+      // the first marble starts and ends in the two seam stubs
+      const L0 = plan.lanes[0];
+      assert.ok(Math.hypot(L0.stubs[0].x - seam.top.x, L0.stubs[0].y - seam.top.y) < 1e-9);
+      assert.ok(Math.hypot(L0.stubs[1].x - seam.bottom.x, L0.stubs[1].y - seam.bottom.y) < 1e-9);
+      assert.ok(Math.abs(L0.stubs[0].angle - L0.stubs[1].angle) < 1e-9, 'same pipe angle');
+      // each seam frame contains only its stub and two straight rails, identical relative to the stub
+      const inside = (b, p) => p.x > b.x0 && p.x < b.x1 && p.y > b.y0 && p.y < b.y1;
+      const contents = (b, c) => {
+        const items = [];
+        for (const l of plan.lanes) {
+          for (const h of l.hits) assert.ok(!inside(b, h.pos), `${l.name} pad inside a seam frame`);
+          for (const st of l.stubs) if (inside(b, st)) items.push(`stub ${(st.x - c.x).toFixed(3)},${(st.y - c.y).toFixed(3)}`);
+          for (const r of l.rails) for (let s = r.s0 || 0; s <= r.sEnd; s += 0.05) {
+            const q = r.path.at(s);
+            if (inside(b, q)) items.push(`rail ${(q.x - c.x).toFixed(2)},${(q.y - c.y).toFixed(2)}`);
+          }
+          for (const q of [...l.rails.flatMap((r) => r.brackets || []), ...l.stubs.map((st) => st.bracket)])
+            if (inside(b, q)) items.push(`bracket ${(q.x - c.x).toFixed(3)},${(q.y - c.y).toFixed(3)}`);
+        }
+        return new Set(items);
+      };
+      const top = contents(seam.boxTop, seam.top), bottom = contents(seam.boxBottom, seam.bottom);
+      const missing = [...top].filter((x) => !bottom.has(x)), extra = [...bottom].filter((x) => !top.has(x));
+      assert.ok(top.size > 20, 'the frames show the rails');
+      assert.deepEqual({ missing: missing.length, extra: extra.length }, { missing: 0, extra: 0 }, `differs: ${[...missing.slice(0, 3), ...extra.slice(0, 3)].join('; ')}`);
     });
 
     await t.test('every note is a real bounce: head-on, leaving away from the pad', () => {
@@ -139,6 +181,21 @@ test('fast passages get smaller pads (like a glockenspiel run)', () => {
   assert.ok(Math.max(...scales) > 0.8, `largest ${Math.max(...scales)}`);
 });
 
+test('a plan survives the trip to and from the planning worker (structured clone)', () => {
+  const plan = planFor(buildSong('ode'), 'harmony').plan;
+  const copy = rehydratePlan(structuredClone(toPlain(plan)));
+  assert.equal(copy.D, plan.D);
+  for (let k = 0; k < plan.lanes.length; k++) {
+    for (let tt = 0; tt < plan.D; tt += 0.37) {
+      const a = marbleAt(plan.lanes[k], tt), b = marbleAt(copy.lanes[k], tt);
+      assert.ok(Math.hypot(a.x - b.x, a.y - b.y) < 1e-12);
+    }
+    const r = copy.lanes[k].rails[0];
+    assert.equal(typeof r.path.at, 'function', 'paths work again');
+    assert.deepEqual(r.path.at(r.sEnd / 2), plan.lanes[k].rails[0].path.at(r.sEnd / 2));
+  }
+});
+
 test('planning is deterministic: same song + seed gives the same course', () => {
   const song = generateSong(3);
   const plan = () => {
@@ -165,9 +222,10 @@ test('other paces: speed cap, momentum and no clipping hold', () => {
   }
 });
 
+// (planning runs in a background worker with a progress spinner, so a few seconds is fine)
 test('regular songs plan quickly enough for the browser', () => {
   for (const song of SONG_LIST.filter((s) => !s.name.startsWith('Stress'))) for (const second of ['harmony', 'percussion']) {
     const r = planFor(song, second);
-    if (r) assert.ok(r.ms < 4000, `${song.name} [${second}] took ${r.ms} ms`);
+    if (r) assert.ok(r.ms < 6000, `${song.name} [${second}] took ${r.ms} ms`);
   }
 });

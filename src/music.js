@@ -291,3 +291,35 @@ export function splitParts(notes, { second = 'auto' } = {}) {
   }
   return { parts: parts.filter((p) => p.notes.length), muted, second };
 }
+
+// ---------------------------------------------------------------------------------------------
+// What each hit is played on. 'classic' = keys (melody) and bars (harmony/bass); 'arcade' =
+// light-up arcade buttons; 'chimes' = hanging chime tubes; 'mix' changes object phrase by phrase
+// (after a gap of >= 0.6 s, or every 8 hits) so a song gets some variety. The bass always stays
+// on bars and drums stay drums. Sets g.obj on each group; deterministic for a seed.
+export const OBJECT_MODES = ['mix', 'classic', 'arcade', 'chimes'];
+
+export function assignObjects(parts, { mode = 'mix', seed = 1 } = {}) {
+  const rng = mulberry32((seed >>> 0) ^ 0x9e3779b9);
+  for (const p of parts) {
+    if (p.style === 'drums') continue;
+    const base = p.style === 'bars' ? 'bar' : 'key';
+    const bass = p.role === 'bass';
+    if (mode === 'classic' || bass) { for (const g of p.groups) g.obj = base; continue; }
+    if (mode === 'arcade' || mode === 'chimes') { for (const g of p.groups) g.obj = mode === 'arcade' ? 'button' : 'tube'; continue; }
+    const choices = p.role === 'lead' ? ['key', 'button', 'tube'] : ['bar', 'tube', 'button'];
+    let cur = base, count = 0;
+    p.groups.forEach((g, i) => {
+      const gap = i ? g.t - p.groups[i - 1].t : 0;
+      if (i > 0 && (gap >= 0.6 || count >= 8)) {
+        const others = choices.filter((c) => c !== cur);
+        cur = others[Math.floor(rng() * others.length)];
+        count = 0;
+      }
+      g.obj = cur;
+      count++;
+    });
+  }
+  return parts;
+}
+

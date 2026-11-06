@@ -36,6 +36,16 @@ npm test           # the full test suite (~1.5 min)
 npm run test:quick # music, MIDI, physics and audio only (seconds)
 ```
 
+Pick what the marbles hit with **Objects**: *Mix it up* (default — the object changes phrase
+by phrase), *Classic* keys & bars, *Arcade buttons* (light up and flash, with an electric
+blip sound) or *Chime tubes* (shimmer and wobble, with a tubular-bell sound). The bass stays
+on bars and drums stay drums; each object's sound follows what you see.
+
+Pick a **theme** (Sky, Spooky — a moonlit purple stone wall with ghosts, bats, pumpkins
+and flickering candles — or Lab, a clean white test lab with light panels, hazard plates
+and indicator lights that blink on the beat). Courses are planned in a background worker
+with a progress spinner, so the page never freezes.
+
 Click to start (browsers need a click before playing audio). Pick a built-in song, roll a
 procedural one with 🎲, or load your own `.mid` file. `Space` pauses, `H` hides the panel.
 Preview URLs: `?song=ode&cam=overview&t=12` freezes the scene at loop time 12s.
@@ -95,7 +105,13 @@ The trick is to work **backwards from the music** instead of simulating forwards
    reflects the incoming velocity into the required outgoing one.
 4. **Two looks**: the front marble's course is silver chrome with dark slate pads and a
    silver marble; the back marble's is brass with warm wood pads and a gold marble.
-5. **Rendering & audio** (`src/main.js`, `src/audio.js`). Three.js draws the wall, lanes and
+5. **Seamless loop**: the first marble rolls out of a short pipe stub at the start and into
+   an identical stub at the end. Both stubs sit in reserved "seam frames" (a sign with the
+   song title behind, the same rails in and out, nothing else), and the camera is a pure
+   function of loop time (`src/camera.js`) that frames both from exactly the same offset —
+   so the last frame matches the first and it looks like the marble passed through one
+   short pipe. The second marble is tucked into its own stub before the loop point.
+6. **Rendering & audio** (`src/main.js`, `src/audio.js`). Three.js draws the wall, lanes and
    decorations (pixel sprites bob on the beat); the Web Audio synth schedules every note on
    the AudioContext clock, which also drives the
    animation, so sound and visuals stay locked.
@@ -111,10 +127,13 @@ The trick is to work **backwards from the music** instead of simulating forwards
 - `test/physics.test.js` — track paths, flights, rolling, switchbacks, dropping onto a rail.
 - `test/audio.test.js` — every sound font rendered offline (`node-web-audio-api`): every voice
   sounds, nothing is NaN or clipping, notes are in tune.
+- `test/camera.test.js` — the camera: the loop's first and last shots are identical (at any
+  screen shape), the seam shot stays inside its sign, and the camera never jumps.
 - `test/course.test.js` — the course contract for built-in, procedural and awkward
   MIDI-shaped stress songs (`test/stress-songs.js`): every note played once at its moment,
   continuous looping path, real head-on bounces, no launches, the speed cap, no clipping,
-  tubes only where a ramp loops back, the marbles together, no compromises, determinism,
+  tubes only where a ramp loops back, the marbles together, no compromises, the seamless
+  loop (marbles hidden at the seam, identical seam frames), the worker hand-off, determinism,
   other paces, and a planning-time guard.
 
 "Export JSON" downloads the full course (pads, normals, times, notes, ramp paths), e.g. to
