@@ -19,16 +19,24 @@ async function render(fn, seconds = 1.6) {
   return { d, peak, rms: Math.sqrt(sum / d.length), nan };
 }
 
-/** Autocorrelation pitch estimate over a window. */
+/**
+ * Autocorrelation pitch estimate over a window: the shortest period that correlates nearly as well
+ * as the best one (a multiple of the period - a subharmonic - correlates just as well, and the
+ * randomised reverb tail can tip the plain maximum onto one).
+ */
 function pitch(d, a = 0.06, b = 0.3) {
   const i0 = Math.floor(a * SR), i1 = Math.floor(b * SR);
-  let best = 0, lag = 0;
-  for (let L = Math.floor(SR / 2000); L < SR / 60; L++) {
+  const L0 = Math.floor(SR / 2000), corr = [];
+  let best = 0;
+  for (let L = L0; L < SR / 60; L++) {
     let s = 0;
     for (let i = i0; i < i1; i++) s += d[i] * d[i + L];
-    if (s > best) { best = s; lag = L; }
+    corr[L] = s;
+    best = Math.max(best, s);
   }
-  return SR / lag;
+  for (let L = L0 + 1; L < corr.length - 1; L++) // the first local peak that's close to the best
+    if (corr[L] >= 0.9 * best && corr[L] >= corr[L - 1] && corr[L] >= corr[L + 1]) return SR / L;
+  return SR / corr.indexOf(best);
 }
 
 for (const obj of Object.keys(OBJECT_VOICES)) {

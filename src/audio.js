@@ -401,16 +401,16 @@ export class Synth {
     if (this.guitarCache.has(midi)) return this.guitarCache.get(midi);
     const sr = this.ctx.sampleRate, f = mtof(midi), secs = clamp(3.2 - (midi - 40) * 0.04, 1.2, 3.2);
     const n = Math.floor(sr * secs), buf = this.ctx.createBuffer(1, n, sr), d = buf.getChannelData(0);
-    const bright = clamp(0.5 + (midi - 40) * 0.006, 0.5, 0.68); // higher strings stay brighter
+    const bright = clamp(0.5 + (midi - 40) * 0.003, 0.5, 0.58); // (mellow: highs fade fast; higher strings a touch brighter)
     // loop delay = period; the damping filter (bright*y + (1-bright)*y_prev) adds (1-bright) samples
     const P = sr / f - (1 - bright), N = Math.floor(P);
     let seed = (midi * 2654435761) >>> 0;
     const rnd = () => { seed = (seed * 1664525 + 1013904223) >>> 0; return seed / 4294967296 * 2 - 1; };
-    // the pluck: noise for one period, plucked a fifth of the way along (a comb notch: rounder
-    // than at the very end), softened a little
-    const M = Math.min(n, N + 2), ex = Array.from({ length: M }, rnd), pick = Math.max(1, Math.round(N / 5));
-    let lp = 0;
-    for (let i = 0; i < M; i++) { lp = 0.5 * lp + 0.5 * (ex[i] - (i >= pick ? ex[i - pick] : 0)); d[i] = lp; }
+    // the pluck: a soft fingertip, not a pick - noise for one period, plucked about a third of the
+    // way along (a comb notch), then smoothed well (three gentle low-passes) so it starts round
+    const M = Math.min(n, N + 2), ex = Array.from({ length: M }, rnd), pick = Math.max(1, Math.round(N / 3.2));
+    for (let i = 0; i < M; i++) d[i] = ex[i] - (i >= pick ? ex[i - pick] : 0);
+    for (let pass = 0; pass < 3; pass++) { let lp = 0; for (let i = 0; i < M; i++) { lp = 0.7 * lp + 0.3 * d[i]; d[i] = lp; } }
     const decay = Math.pow(0.001, 1 / (secs * f)); // per period: about -60 dB over the buffer
     let prev = 0;
     for (let i = M; i < n; i++) { // the output is its own delay line: read one period back
@@ -429,24 +429,25 @@ export class Synth {
   }
 
   note_guitar(midi, vel, t, dur, role) {
-    const ctx = this.ctx, a = 0.55 * vel * (role === 'chord' ? 0.55 : role === 'bass' ? 1.1 : 1);
-    const g = this.voice({ rev: 0.32, echo: role === 'lead' ? 0.1 : 0, pan: role === 'chord' ? (midi % 5 - 2) * 0.08 : 0 });
+    const ctx = this.ctx, a = 0.28 * vel * (role === 'chord' ? 0.55 : role === 'bass' ? 1.0 : 1);
+    const g = this.voice({ rev: 0.42, echo: role === 'lead' ? 0.12 : 0, pan: role === 'chord' ? (midi % 5 - 2) * 0.08 : 0 });
     // a wooden body: a low resonance, a scooped middle, the top rounded off
     const b1 = ctx.createBiquadFilter(), b2 = ctx.createBiquadFilter(), top = ctx.createBiquadFilter();
     b1.type = 'peaking'; b1.frequency.value = 110; b1.Q.value = 1.2; b1.gain.value = 4;
     b2.type = 'peaking'; b2.frequency.value = 700; b2.Q.value = 0.8; b2.gain.value = -3;
-    top.type = 'lowpass'; top.frequency.value = 5200;
+    top.type = 'lowpass'; top.frequency.value = 3400; top.Q.value = 0.5;
     b1.connect(b2).connect(top).connect(g);
     const src = ctx.createBufferSource();
     src.buffer = this.guitarBuffer(midi);
     src.connect(b1);
     // the string rings for its note (and a little after), then a finger damps it
-    const ringFor = Math.max(dur + 0.35, role === 'lead' ? 0.9 : 0.6);
-    g.gain.setValueAtTime(a, t);
+    const ringFor = Math.max(dur + 0.5, role === 'lead' ? 1.2 : 0.8);
+    g.gain.setValueAtTime(0, t);
+    g.gain.linearRampToValueAtTime(a, t + 0.008); // a soft onset (no click)
     g.gain.setValueAtTime(a, t + ringFor); // (anchor the level where the damping starts)
-    g.gain.setTargetAtTime(0, t + ringFor, 0.12);
+    g.gain.setTargetAtTime(0, t + ringFor, 0.3); // let it fade out smoothly
     src.start(t);
-    src.stop(t + Math.min(src.buffer.duration, ringFor + 0.8));
+    src.stop(t + Math.min(src.buffer.duration, ringFor + 1.5));
   }
 
   /** A glass bottle: a clear, glassy ping (bright partials, quick to fade). */
