@@ -42,14 +42,6 @@
     @media (prefers-reduced-motion: reduce) { #planning .spinner { animation-duration: 2.4s; } }
     @media (max-width: 600px) { #panel { width: auto; right: 12px; } }
   </style>
-  <script type="importmap">
-    {
-      "imports": {
-        "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
-        "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
-      }
-    }
-  </script>
 </head>
 <body>
   <div id="panel">
@@ -144,6 +136,28 @@
     <div class="spinner"></div><div id="planningText">Planning course…</div><div class="bar"><div id="planningBar"></div></div>
   </div></div>
   <div id="start"><div><b>▶ Click to start</b><span style="color:#9aa0c0">audio needs a click to begin</span></div></div>
-  <script type="module" src="./src/main.js"></script>
+  <script>
+    // GitHub Pages lets browsers cache files for 10 minutes, so right after a deploy a browser
+    // could mix old and new scripts. Load every module with this visit's version tag (via an
+    // import map, set up before any module loads) so they always come from the same version.
+    (() => {
+      const v = Date.now().toString(36);
+      const imports = {
+        three: 'https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js',
+        'three/addons/': 'https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/',
+      };
+      for (const m of ['main', 'planner', 'music', 'midi', 'audio', 'util', 'camera', 'themes'])
+        imports[`./src/${m}.js`] = `./src/${m}.js?v=${v}`;
+      const map = document.createElement('script');
+      map.type = 'importmap';
+      map.textContent = JSON.stringify({ imports });
+      document.body.append(map);
+      window.APP_VERSION = v;
+      const main = document.createElement('script');
+      main.type = 'module';
+      main.src = `./src/main.js?v=${v}`;
+      document.body.append(main);
+    })();
+  </script>
 </body>
 </html>

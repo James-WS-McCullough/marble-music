@@ -15,6 +15,27 @@ import { mulberry32 } from './util.js';
 
 const $ = (id) => document.getElementById(id);
 
+// A cached copy of an older page (missing newer controls) can't run this code: reload once to
+// get the current page, rather than failing silently.
+{
+  const needed = ['song', 'seed', 'font', 'second', 'pace', 'melodyObj', 'harmonyObj', 'drumKit', 'theme', 'cam', 'planning', 'info'];
+  const missing = needed.filter((id) => !$(id));
+  if (missing.length) {
+    let tried = false;
+    try { tried = sessionStorage.getItem('marble-reloaded') === '1'; sessionStorage.setItem('marble-reloaded', '1'); } catch {}
+    if (!tried) location.reload();
+    throw new Error(`This page is out of date (missing ${missing.join(', ')}); please reload.`);
+  }
+  try { sessionStorage.removeItem('marble-reloaded'); } catch {}
+}
+// Show problems in the panel instead of leaving a blank page.
+const showError = (msg) => {
+  $('planning').classList.remove('on');
+  $('info').innerHTML = `<span style="color:#ff8a80">Something went wrong: ${String(msg).replace(/</g, '&lt;')}</span>`;
+};
+addEventListener('error', (e) => showError(e.message));
+addEventListener('unhandledrejection', (e) => showError(e.reason?.message || e.reason));
+
 // ------------------------------------------------------------------ renderer / scene
 const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
@@ -528,7 +549,7 @@ function planInBackground(parts, options, onProgress) {
     };
     if (params.has('shot')) return fallback(); // screenshot mode: plan synchronously (deterministic capture)
     if (!worker) {
-      try { worker = new Worker(new URL('./plan-worker.js', import.meta.url), { type: 'module' }); }
+      try { worker = new Worker(new URL(`./plan-worker.js?v=${window.APP_VERSION || ''}`, import.meta.url), { type: 'module' }); }
       catch { worker = null; return fallback(); }
     }
     const w = worker;
